@@ -2,6 +2,7 @@
 
 > **目标读者**：想逐行理解 Kronos 核心源码的开发者
 > **核心问题**：每个文件、每个类、每个方法的设计意图是什么？
+> **前置要求**：建议先完成[系统架构分析](01-system-architecture.md)和[Transformer 设计分析](03-transformer-design.md)，具备 PyTorch 基础知识（`nn.Module`、`autograd`、`F.scaled_dot_product_attention`）
 
 ## 学习目标
 

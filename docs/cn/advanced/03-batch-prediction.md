@@ -132,6 +132,25 @@ x = x.reshape(-1, x.size(1), x.size(2))  # (B*sample_count, seq_len, features)
 
 因此，`predict_batch(df_list=5, sample_count=3)` 的实际 batch 大小为 15。需注意 GPU 显存是否足够。
 
+### 显存估算公式
+
+批量推理的显存占用可以近似估算：
+
+```
+显存占用 ≈ 实际 batch × seq_len × d_model × n_layers × 4 字节 × 4（前向+反向+激活+中间）
+```
+
+以 `Kronos-small`（d_model=512, n_layers=12）为例：
+
+| 配置 | 实际 batch | 预估显存 |
+|------|-----------|---------|
+| 1 条序列, sample=1 | 1 | ~1 GB |
+| 5 条序列, sample=1 | 5 | ~2 GB |
+| 5 条序列, sample=3 | 15 | ~4 GB |
+| 10 条序列, sample=5 | 50 | ~8 GB+（可能 OOM） |
+
+**安全策略**：当不确定显存是否足够时，使用分批处理将大批量拆分为小批量（见下方"分批处理"代码示例），逐步增加批量大小直到接近显存上限。
+
 ---
 
 ## 性能建议
