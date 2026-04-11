@@ -267,6 +267,27 @@ Kronos 的 Transformer 设计与 LLaMA 等现代大语言模型高度一致（RM
 
 ---
 
+## 与 LLaMA 架构的逐项对照
+
+Kronos 的 Transformer 设计大量借鉴了 LLaMA 的架构选择。以下逐项对照两者的一致与差异：
+
+| 组件 | LLaMA | Kronos | 一致性 | 差异说明 |
+|------|-------|--------|--------|---------|
+| 归一化 | RMSNorm | RMSNorm | 完全一致 | — |
+| 注意力 | GQA（分组查询注意力） | MHA（多头注意力） | 部分一致 | Kronos 使用标准多头注意力，未采用 GQA。原因是 Kronos 模型规模较小（d_model ≤ 832），标准 MHA 的计算开销可接受 |
+| 位置编码 | RoPE | RoPE | 完全一致 | — |
+| 前馈网络 | SwiGLU | SwiGLU | 完全一致 | — |
+| 偏置项 | 无 bias | 无 bias | 完全一致 | — |
+| 残差连接 | Pre-Norm | Pre-Norm | 完全一致 | — |
+| 词汇表 | 文本 token（30K+） | K 线令牌（s1: 1024, s2: 1024） | 不同 | Kronos 的词汇表远小于 LLM，这是量化令牌设计的直接结果 |
+| 序列长度 | 4096-8192+ | 512 | 不同 | 金融时间序列的有效信息窗口较短，512 已覆盖足够的历史模式 |
+| 时间感知 | 无（文本无需时间特征） | TemporalEmbedding | Kronos 独有 | 金融数据的周期性（日内、周内、月内效应）需要显式时间编码 |
+| 条件解码 | 无 | DependencyAwareLayer | Kronos 独有 | s2 令牌需要条件依赖于 s1 的采样结果，这是层级令牌体系的核心机制 |
+
+**关键启示**：Kronos 在 Transformer 主体上复用了 LLM 领域验证过的最佳实践（RMSNorm + RoPE + SwiGLU + Pre-Norm），但在两个维度上做了金融领域特有的扩展——**时间感知**（TemporalEmbedding）和**条件解码**（DependencyAwareLayer）。这种"主干复用 + 领域适配"的设计思路值得在其他时间序列任务中借鉴。
+
+---
+
 ## 组件替换影响分析
 
 如果你打算替换某个 Transformer 组件，以下是关键注意事项：

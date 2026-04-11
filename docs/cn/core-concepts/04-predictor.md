@@ -293,6 +293,22 @@ for i in range(pred_len):
 
 当历史长度超过 `max_context` 时，最早的历史令牌被丢弃，只保留最近的 512 个令牌作为上下文。
 
+### 多采样并行机制
+
+`sample_count` 的实现方式是**将采样维度扩展到 batch 维度**，而非串行循环。源码中的关键操作（`kronos.py:394`）：
+
+```python
+# 将单条数据复制 sample_count 份，拼接到 batch 维度
+x = x.unsqueeze(1).repeat(1, sample_count, 1, 1)
+x = x.reshape(-1, x.size(1), x.size(2))
+# 变换前: (batch=1, seq_len=400, features=6)
+# 变换后: (batch=sample_count, seq_len=400, features=6)
+```
+
+这意味着 `sample_count=5` 时，5 条采样路径在 GPU 上**并行计算**，而非串行执行 5 次。推理结束后再 reshape 回 `(1, sample_count, pred_len, 6)` 并沿 `sample_count` 维度取平均。
+
+**实际 batch 大小**：在 `predict_batch()` 中，实际 batch 大小为 `batch_num × sample_count`。例如 `batch_num=3, sample_count=5` 时实际 batch 为 15，需注意 GPU 显存是否足够。
+
 ---
 
 ## 常见误区
