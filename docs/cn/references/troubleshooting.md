@@ -1,0 +1,362 @@
+# 常见错误排查指南 ⭐⭐
+
+> **目标读者**：在使用 Kronos 过程中遇到错误需要排查的用户
+> **前置要求**：已完成[快速开始](../getting-started/02-quickstart.md)
+
+---
+
+## 按错误类型索引
+
+| 错误类型 | 常见场景 | 跳转 |
+|---------|---------|------|
+| OOM / 内存不足 | 预测、微调、批量推理 | [内存类错误](#内存类错误) |
+| NaN 相关 | 数据准备、模型推理 | [数据类错误](#数据类错误) |
+| 维度不匹配 | 自定义代码、批量预测 | [张量维度错误](#张量维度错误) |
+| 模型加载失败 | 首次使用、网络问题 | [模型加载错误](#模型加载错误) |
+| 训练不收敛 | 微调过程 | [训练类错误](#训练类错误) |
+
+---
+
+## 内存类错误
+
+### RuntimeError: CUDA out of memory
+
+**触发场景**：使用 GPU 推理或训练时，显存不足。
+
+**错误信息示例**：
+
+```
+RuntimeError: CUDA out of memory. Tried to allocate XXX MiB
+```
+
+**排查步骤**：
+
+1. **确认当前显存占用**：
+
+```python
+import torch
+print(f"已分配显存: {torch.cuda.memory_allocated() / 1024**2:.0f} MB")
+print(f"最大显存: {torch.cuda.max_memory_allocated() / 1024**2:.0f} MB")
+```
+
+2. **逐步降低资源使用**：
+
+| 优化手段 | 操作 | 效果 |
+|---------|------|------|
+| 减小历史窗口 | `lookback` 从 400 降至 200 | 显存占用近似线性减少 |
+| 减少采样次数 | `sample_count` 从 5 降至 1 | 显存占用线性减少 |
+| 缩短预测步数 | `pred_len` 从 120 降至 60 | 推理中每步占用不变，但总时间减少 |
+| 使用更小模型 | `Kronos-small` 替代 `Kronos-base` | 显存占用显著减少 |
+| 分批处理 | 将大批量拆分为多个小批量 | 单批显存占用减少 |
+
+3. **强制使用 CPU**：
+
+```python
+predictor = KronosPredictor(model, tokenizer, device="cpu")
+```
+
+### MemoryError（CPU 内存不足）
+
+**排查步骤**：
+
+- 减小 `lookback`（建议不低于 64）
+- 使用 `Kronos-small` 或 `Kronos-mini`
+- 避免同时持有多个 `predictor` 实例
+
+---
+
+## 数据类错误
+
+### ValueError: Input DataFrame contains NaN values
+
+**触发场景**：传入 `predict()` 的 DataFrame 中存在 NaN 值。
+
+**错误信息**：
+
+```
+ValueError: Input DataFrame contains NaN values in price or volume columns.
+```
+
+**排查步骤**：
+
+1. **定位 NaN 位置**：
+
+```python
+# 检查每列的 NaN 数量
+nan_counts = df[['open', 'high', 'low', 'close', 'volume', 'amount']].isnull().sum()
+print(nan_counts[nan_counts > 0])
+```
+
+2. **修复 NaN**：
+
+```python
+# 方法 1：前向填充（推荐）
+df = df.ffill()
+
+# 方法 2：删除包含 NaN 的行
+df = df.dropna()
+
+# 方法 3：用前一根 K 线的收盘价填充开盘价
+df.loc[df['open'].isna(), 'open'] = df['close'].shift(1)
+```
+
+3. **验证修复结果**：
+
+```python
+assert not df[['open', 'high', 'low', 'close']].isnull().any().any(), "仍有 NaN"
+```
+
+### ValueError: Price columns not found in DataFrame
+
+**触发场景**：DataFrame 中缺少必填列。
+
+**排查步骤**：
+
+```python
+required_cols = ['open', 'high', 'low', 'close']
+missing = [c for c in required_cols if c not in df.columns]
+if missing:
+    print(f"缺少列：{missing}")
+    # 检查列名是否大小写不同或使用了中文列名
+    print(f"实际列名：{df.columns.tolist()}")
+```
+
+**常见原因**：
+
+- CSV 列名为中文（如"开盘"而非 `open`）
+- 列名大小写不匹配（如 `Open` 而非 `open`）
+- 列名包含空格
+
+**解决方法**：
+
+```python
+# 重命名列
+df.rename(columns={
+    "开盘": "open", "最高": "high",
+    "最低": "low", "收盘": "close",
+    "成交量": "volume", "成交额": "amount"
+}, inplace=True)
+
+# 或统一转小写
+df.columns = df.columns.str.strip().str.lower()
+```
+
+### 预测结果中出现异常值（价格为 0 或极大值）
+
+**排查步骤**：
+
+1. 检查输入数据中是否有价格为 0 的记录（通常是停牌日）
+2. 检查数据是否按时间升序排列
+3. 检查是否有极端异常值（如价格为负数）
+
+```python
+# 检查异常值
+for col in ['open', 'high', 'low', 'close']:
+    zero_count = (df[col] == 0).sum()
+    neg_count = (df[col] < 0).sum()
+    if zero_count > 0 or neg_count > 0:
+        print(f"{col}: {zero_count} 个零值, {neg_count} 个负值")
+```
+
+---
+
+## 张量维度错误
+
+### RuntimeError: shape mismatch
+
+**触发场景**：批量预测时各序列长度不一致。
+
+**错误信息**：
+
+```
+RuntimeError: shape mismatch: ... size ... vs ...
+```
+
+或
+
+```
+ValueError: Parallel prediction requires all series to have consistent historical lengths, got: [...]
+```
+
+**排查步骤**：
+
+```python
+# 检查各序列长度
+for i, df in enumerate(df_list):
+    print(f"序列 {i}: {len(df)} 行")
+```
+
+**解决方法**：
+
+```python
+# 方法 1：截断为相同长度（取最短的）
+min_len = min(len(df) for df in df_list)
+df_list = [df.iloc[:min_len] for df in df_list]
+
+# 方法 2：分别调用 predict()
+results = []
+for df_i, x_ts_i, y_ts_i in zip(df_list, x_ts_list, y_ts_list):
+    pred = predictor.predict(df=df_i, x_timestamp=x_ts_i, y_timestamp=y_ts_i, pred_len=pred_len)
+    results.append(pred)
+```
+
+### ValueError: y_timestamp length should equal pred_len
+
+**排查步骤**：
+
+```python
+# 确保 y_timestamp 的长度等于 pred_len
+assert len(y_timestamp) == pred_len, f"y_timestamp 长度 {len(y_timestamp)} ≠ pred_len {pred_len}"
+```
+
+---
+
+## 模型加载错误
+
+### FileNotFoundError / OSError: Model not found
+
+**触发场景**：从 HuggingFace Hub 下载模型失败。
+
+**排查步骤**：
+
+1. **检查网络连接**：确保能访问 `huggingface.co`
+
+2. **使用镜像站**（中国大陆用户）：
+
+```bash
+export HF_ENDPOINT=https://hf-mirror.com
+```
+
+3. **手动下载模型**：
+
+```python
+# 指定本地路径
+tokenizer = KronosTokenizer.from_pretrained("/path/to/local/Kronos-Tokenizer-base")
+model = Kronos.from_pretrained("/path/to/local/Kronos-small")
+```
+
+4. **检查 HuggingFace 缓存**：
+
+```python
+from huggingface_hub import scan_cache_dir
+cache = scan_cache_dir()
+for repo in cache.repos:
+    print(f"{repo.repo_id}: {repo.size_on_disk / 1024**2:.1f} MB")
+```
+
+### RuntimeError: Error(s) in loading state_dict
+
+**触发场景**：模型权重与代码版本不匹配。
+
+**排查步骤**：
+
+```python
+# 检查模型的 config
+model = Kronos.from_pretrained("NeoQuasar/Kronos-small")
+print(model.config)  # 查看实际配置参数
+```
+
+**常见原因**：
+
+- 使用了错误版本的代码（模型结构已更改）
+- 指定了错误的模型路径（如将分词器路径传给了 `Kronos.from_pretrained()`）
+
+---
+
+## 训练类错误
+
+### 训练损失不下降
+
+**排查清单**：
+
+| 检查项 | 方法 | 期望 |
+|--------|------|------|
+| 数据质量 | 检查 NaN、零值、异常值 | 无异常 |
+| 数据量 | 检查 CSV 行数 | 至少几千行 |
+| 学习率 | 查看 config 中的 lr | tokenizer: ~2e-4, predictor: ~4e-5 |
+| 预训练权重 | 检查 `pre_trained` 设置 | 应为 `true` |
+| clip 值 | 查看标准化后数据范围 | 大部分值在 [-5, 5] 内 |
+
+**快速诊断脚本**：
+
+```python
+import pandas as pd
+import numpy as np
+
+df = pd.read_csv("your_data.csv")
+x = df[['open', 'high', 'low', 'close', 'volume', 'amount']].values.astype(np.float32)
+
+# 检查数据分布
+print(f"数据量: {x.shape}")
+print(f"NaN 数量: {np.isnan(x).sum()}")
+print(f"零值数量: {(x == 0).sum()}")
+print(f"负值数量: {(x < 0).sum()}")
+
+# 检查标准化后的分布
+x_mean, x_std = np.mean(x, axis=0), np.std(x, axis=0)
+x_norm = (x - x_mean) / (x_std + 1e-5)
+print(f"标准化后范围: [{x_norm.min():.2f}, {x_norm.max():.2f}]")
+print(f"标准化后 >5 的比例: {(np.abs(x_norm) > 5).mean():.4f}")
+```
+
+### DDP / torchrun 相关错误
+
+#### RuntimeError: NCCL error
+
+**排查步骤**：
+
+1. 确认所有 GPU 可见：`nvidia-smi`
+2. 减少进程数：`--nproc_per_node=1`
+3. 检查 NCCL 后端：确保安装了 CUDA 版本的 PyTorch
+
+#### WORLD_SIZE 环境变量未设置
+
+**原因**：直接运行 `python train_tokenizer.py` 而非通过 `torchrun`。
+
+**解决方法**：
+
+```bash
+# 必须使用 torchrun
+torchrun --standalone --nproc_per_node=1 finetune/train_tokenizer.py
+```
+
+---
+
+## 预测结果类问题
+
+### 预测结果为一条直线
+
+**可能原因与解决方法**：
+
+| 原因 | 解决方法 |
+|------|---------|
+| `lookback` 过小（< 64） | 增大到至少 200 |
+| 温度 `T` 过低（如 0.01） | 增大到 0.8-1.2 |
+| 数据本身波动极小 | 检查输入数据是否异常 |
+| 模型未正确加载 | 确认 `from_pretrained()` 成功 |
+
+### 预测结果与真实值偏差很大
+
+**排查步骤**：
+
+1. **确认数据格式正确**：检查列名、数据类型、排序顺序
+2. **检查时间戳**：确保时间戳与数据对应
+3. **增加历史窗口**：`lookback` 建议不低于 200
+4. **增加采样次数**：`sample_count=5` 可获得更稳定的结果
+5. **调整温度**：`T=1.0` 是推荐起点
+
+> **注意**：金融预测本身具有高度不确定性。模型预测反映的是基于历史模式的概率分布，不是确定性预测。
+
+---
+
+## 自测清单
+
+- [ ] 我知道遇到 OOM 时应该优先调整哪些参数
+- [ ] 我能用脚本定位 DataFrame 中的 NaN 位置并修复
+- [ ] 我知道批量预测要求所有序列长度一致的原因和解决方法
+- [ ] 我知道如何排查模型下载失败的问题
+- [ ] 我能说出训练不收敛的至少 3 个排查方向
+
+---
+**文档元信息**
+难度：⭐⭐ | 类型：参考文档 | 预计阅读时间：15 分钟
