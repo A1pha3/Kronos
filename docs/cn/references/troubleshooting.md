@@ -1,7 +1,28 @@
-# 常见错误排查指南 ⭐⭐
+# 常见错误排查指南
 
 > **目标读者**：在使用 Kronos 过程中遇到错误需要排查的用户
 > **前置要求**：已完成[快速开始](../getting-started/02-quickstart.md)
+
+---
+
+## 快速诊断：根据错误信息定位
+
+看到报错后，用关键词在下表中快速定位对应的排查步骤：
+
+| 错误信息关键词 | 可能原因 | 跳转 |
+|--------------|---------|------|
+| `CUDA out of memory` | GPU 显存不足 | [OOM 错误](#runtimeerror-cuda-out-of-memory) |
+| `MemoryError` | CPU 内存不足 | [CPU 内存不足](#memoryerrorcpu-内存不足) |
+| `contains NaN` | 输入数据有缺失值 | [NaN 错误](#valueerror-input-dataframe-contains-nan-values) |
+| `not found in DataFrame` | 缺少必填列 | [列缺失](#valueerror-price-columns-not-found-in-dataframe) |
+| `shape mismatch` / `consistent historical lengths` | 批量预测长度不一致 | [维度错误](#runtimeerror-shape-mismatch) |
+| `y_timestamp length should equal` | 时间戳长度不匹配 | [时间戳错误](#valueerror-y_timestamp-length-should-equal-pred_len) |
+| `Model not found` / `OSError` | 模型下载失败 | [模型加载](#filenotfounderror--oserror-model-not-found) |
+| `Error(s) in loading state_dict` | 权重与代码不匹配 | [权重加载](#runtimeerror-errors-in-loading-state_dict) |
+| `NCCL error` | DDP 通信失败 | [NCCL 错误](#runtimeerror-nccl-error) |
+| `WORLD_SIZE` 未设置 | 未使用 torchrun | [torchrun 错误](#world_size-环境变量未设置) |
+| 训练损失不下降 | 超参数或数据问题 | [训练不收敛](#训练损失不下降) |
+| 预测为直线 | 参数或数据问题 | [预测结果为一条直线](#预测结果为一条直线) |
 
 ---
 
@@ -14,6 +35,7 @@
 | 维度不匹配 | 自定义代码、批量预测 | [张量维度错误](#张量维度错误) |
 | 模型加载失败 | 首次使用、网络问题 | [模型加载错误](#模型加载错误) |
 | 训练不收敛 | 微调过程 | [训练类错误](#训练类错误) |
+| 预测结果异常 | 参数设置、数据质量 | [预测结果类问题](#预测结果类问题) |
 
 ---
 
@@ -392,6 +414,89 @@ pred_df = fix_ohlc_logic(pred_df)
 
 ---
 
+## 高级调试技巧
+
+### 使用 torch.autograd.detect_anomaly 定位 NaN 来源
+
+当训练过程中出现 NaN 但不确定来自哪一步时，可以用异常检测定位：
+
+```python
+import torch
+
+# 在训练脚本中启用异常检测
+torch.autograd.set_detect_anomaly(True)
+
+# 运行一次前向+反向传播，如果出现 NaN 会抛出 RuntimeError 并指出具体操作
+# 注意：这会显著降低训练速度，仅用于调试
+```
+
+启用后，PyTorch 会在产生 NaN 的具体算子处抛出异常，帮助你精确定位问题源头。
+
+### 使用 torch.profiler 分析性能瓶颈
+
+当推理速度不达预期时，可以用 profiler 分析耗时分布：
+
+```python
+import torch.profiler as profiler
+
+with profiler.profile(
+    activities=[profiler.ProfilerActivity.CPU, profiler.ProfilerActivity.CUDA],
+    record_shapes=True,
+    profile_memory=True,
+    with_stack=True
+) as prof:
+    pred_df = predictor.predict(
+        df=x_df, x_timestamp=x_timestamp, y_timestamp=y_timestamp,
+        pred_len=60, T=1.0, sample_count=1, verbose=False
+    )
+
+# 打印耗时最长的 10 个操作
+print(prof.key_averages().table(sort_by="cpu_time_total", row_limit=10))
+```
+
+### 逐步调试令牌化过程
+
+当怀疑分词器的编解码有问题时，可以逐步检查中间结果：
+
+```python
+import torch
+from model import KronosTokenizer
+
+tokenizer = KronosTokenizer.from_pretrained("NeoQuasar/KronosTokenizer-base")
+tokenizer.eval()
+
+# 构造输入
+x = torch.randn(1, 10, 6)
+
+# Step 1: 检查嵌入
+z = tokenizer.embed(x)
+print(f"嵌入后范围: [{z.min():.2f}, {z.max():.2f}]")
+
+# Step 2: 检查编码器输出
+for i, layer in enumerate(tokenizer.encoder):
+    z = layer(z)
+    if torch.isnan(z).any():
+        print(f"编码器第 {i} 层出现 NaN")
+        break
+
+# Step 3: 检查量化
+z = tokenizer.quant_embed(z)
+print(f"量化前范围: [{z.min():.2f}, {z.max():.2f}]")
+
+# Step 4: 检查 BSQ 输出
+s1_idx, s2_idx = tokenizer.encode(x, half=True)
+print(f"s1 索引范围: [{s1_idx.min()}, {s1_idx.max()}]")
+print(f"s2 索引范围: [{s2_idx.min()}, {s2_idx.max()}]")
+
+# Step 5: 检查解码
+decoded = tokenizer.decode([s1_idx, s2_idx], half=True)
+print(f"解码结果范围: [{decoded.min():.2f}, {decoded.max():.2f}]")
+if torch.isnan(decoded).any():
+    print("解码结果包含 NaN")
+```
+
+---
+
 ## 自测清单
 
 - [ ] 我知道遇到 OOM 时应该优先调整哪些参数
@@ -399,7 +504,9 @@ pred_df = fix_ohlc_logic(pred_df)
 - [ ] 我知道批量预测要求所有序列长度一致的原因和解决方法
 - [ ] 我知道如何排查模型下载失败的问题
 - [ ] 我能说出训练不收敛的至少 3 个排查方向
+- [ ] 我知道如何用 `detect_anomaly` 定位 NaN 来源
+- [ ] 我知道分词器与模型不匹配时会出现什么错误
 
 ---
 **文档元信息**
-难度：⭐⭐ | 类型：参考文档 | 预计阅读时间：15 分钟
+类型：参考文档 | 预计阅读时间：20 分钟 | 更新日期：2026-04-12
