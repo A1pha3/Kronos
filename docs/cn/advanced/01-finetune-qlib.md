@@ -303,6 +303,36 @@ python finetune/qlib_test.py
 
 应对方法：减小学习率、增大 `accumulation_steps`、减少 `epochs`，或增加数据量。
 
+### 微调效果的系统性诊断框架
+
+当微调效果不理想时，按以下优先级逐一排查：
+
+```
+微调效果不理想？
+│
+├─ 1. 数据层检查
+│   ├─ 数据量是否足够？（建议至少几千条 K 线）
+│   ├─ 数据质量如何？（NaN、零值、异常值比例）
+│   ├─ 训练/验证划分是否合理？（验证集太小会导致指标波动大）
+│   └─ 标准化后数据分布是否合理？（大部分值在 [-5, 5] 内）
+│
+├─ 2. 训练配置检查
+│   ├─ 学习率是否合适？（tokenizer: ~2e-4, predictor: ~4e-5）
+│   ├─ batch_size 是否太小？（太小导致梯度估计不稳定）
+│   ├─ 是否从预训练权重开始？（`pre_trained` 应为 True）
+│   └─ 梯度裁剪是否生效？（max_norm=2.0 for tokenizer, 3.0 for predictor）
+│
+├─ 3. 流程层检查
+│   ├─ 分词器微调是否在预测模型微调之前完成？
+│   ├─ 预测模型微调是否加载了微调后的分词器（而非预训练分词器）？
+│   └─ 分词器在预测模型微调中是否处于 eval 模式且冻结？
+│
+└─ 4. 评估方法检查
+    ├─ 评估指标是否与训练目标一致？
+    ├─ 是否在足够多的样本上评估？
+    └─ 是否考虑了采样的随机性？（多次运行取平均）
+```
+
 ---
 
 ## 常见问题
@@ -387,6 +417,15 @@ torchrun --standalone --nproc_per_node=1 finetune/train_tokenizer.py
 | [CSV 微调指南](02-finetune-csv.md) | ⭐⭐⭐ | 通用数据的微调方法 |
 | [源码走读](../architecture/04-source-code-walkthrough.md) | ⭐⭐⭐⭐ | 深入理解训练代码 |
 
+## 相关文档
+
+- **前置**：[KronosTokenizer 详解](../core-concepts/02-tokenizer.md) — 理解 BSQ 分词原理
+- **前置**：[KronosPredictor 使用指南](../core-concepts/04-predictor.md) — 理解自回归推理流程
+- **并行**：[CSV 微调指南](02-finetune-csv.md) — 通用数据的轻量微调方案
+- **进阶**：[源码走读](../architecture/04-source-code-walkthrough.md) — 深入训练代码实现
+- **实战**：[A 股市场预测实战](04-cn-markets.md) — 微调后用于 A 股预测
+
 ---
 **文档元信息**
 难度：⭐⭐⭐ | 类型：进阶指南 | 预计阅读时间：25 分钟
+更新日期：2026-04-11

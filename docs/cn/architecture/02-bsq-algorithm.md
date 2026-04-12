@@ -31,6 +31,17 @@ Binary Spherical Quantization（BSQ）将量化问题转化为**二值化问题*
 
 **论文出处**：[https://arxiv.org/pdf/2406.07548.pdf](https://arxiv.org/pdf/2406.07548.pdf)
 
+### BSQ 的几何直觉
+
+理解 BSQ 的关键在于"超球面象限"的几何图像：
+
+- L2 归一化将所有向量投影到**单位超球面**（D 维空间中所有长度为 1 的向量组成的曲面）
+- 二值化将超球面划分为 **2^D 个"象限"**——就像 3D 空间被 x、y、z 三个坐标轴的正负分成 8 个卦限一样
+- 每个象限的中心就是一个码本条目，所有码本条目在超球面上**均匀分布**
+- 量化操作就是判断输入向量落入哪个象限——只需检查每个维度的正负号
+
+这种几何结构解释了为什么 BSQ 天然避免了死码问题：象限是等大小划分的，不存在"没有向量落入"的象限。同时也解释了为什么 BSQ 不需要存储显式码本——码本条目由二值向量的所有可能组合隐式定义。
+
 ---
 
 ## 量化过程
@@ -79,20 +90,26 @@ zq = zq * q_scale
 
 ### Step 5：索引计算
 
+源码使用**大端序**（most significant bit first）计算索引：
+
 ```python
-# 二值向量 → 整数索引
-b = (zq + 1) / 2               # {-1, +1} → {0, 1}
-index = sum(b_i * 2^i for i in range(D))
+# 源码 module.py:68 — 大端序 basis
+basis = 2 ** torch.arange(embed_dim - 1, -1, -1)
+# D=4 时：basis = [8, 4, 2, 1]
+
+# 索引计算 module.py:169
+b = (zhat + 1) / 2                           # {-1, +1} → {0, 1}
+index = (b * basis).sum(dim=-1).to(torch.int64)  # 加权求和
 ```
 
-将二值向量解释为一个 D 位二进制数，转换为对应的十进制索引。
+**大端序的含义**：二值向量的第一个维度对应最高有效位。例如 `[1, 0, 1, 0]` 在大端序下表示二进制数 `1010`（十进制 10），而非 `0101`（十进制 5）。
 
 ### 数值示例
 
 给定一个 D=4 的归一化后向量 `z = [0.3, -0.8, 0.1, -0.5]`：
 
 ```
-Step 1: 二值化
+Step 1: 二值化（逐维度判断正负号）
   z[0]=0.3  > 0 → +1    z[1]=-0.8 < 0 → -1
   z[2]=0.1  > 0 → +1    z[3]=-0.5 < 0 → -1
   zhat = [+1, -1, +1, -1]
@@ -100,10 +117,9 @@ Step 1: 二值化
 Step 2: 转换为 0/1
   b = (zhat + 1) / 2 = [1, 0, 1, 0]
 
-Step 3: 计算索引
-  index = 1×2⁰ + 0×2¹ + 1×2² + 0×2³ = 1 + 0 + 4 + 0 = 5
-  （注意：源码 BinarySphericalQuantizer 使用大端序 basis=[8,4,2,1]，
-   实际 index = 1×8 + 0×4 + 1×2 + 0×1 = 10。具体端序取决于实现）
+Step 3: 计算索引（大端序，basis = [8, 4, 2, 1]）
+  index = 1×8 + 0×4 + 1×2 + 0×1 = 10
+  等价于二进制 1010 = 十进制 10
 
 Step 4: 缩放
   q_scale = 1/√4 = 0.5
@@ -111,25 +127,31 @@ Step 4: 缩放
   ||zq||₂ = √(0.25×4) = 1.0 ✓
 ```
 
+**端序为什么重要**：Kronos 的 BSQ 使用大端序意味着二值向量的**前几个维度的变化**对索引的影响更大。结合层级令牌设计——前 `s1_bits` 维对应 s1，后 `s2_bits` 维对应 s2——每个"半边"内部的索引计算也是大端序的。
+
 ---
 
 ## 损失函数
 
-BSQ 的损失由三部分组成：
+BSQ 的损失由三部分组成（源码 `module.py:111-126`）：
 
-```
-total_loss = commit_loss + ζ × entropy_penalty / τ
+```python
+# 源码中的实际计算
+entropy_penalty = gamma0 * persample_entropy - gamma * cb_entropy
+commit_loss = beta * mean(((zq.detach() - z) ** 2).sum(dim=-1))
+total_loss = commit_loss + zeta * entropy_penalty / inv_temperature
 ```
 
 ### 1. Commit Loss（承诺损失）
 
 ```python
-commit_loss = β × mean((zq.detach() - z)² 之和)
+# module.py:119
+commit_loss = beta * mean(((zq.detach() - z) ** 2).sum(dim=-1))
 ```
 
-**含义**：衡量量化前后向量的距离。推动编码器输出的连续向量靠近其量化点。
+**含义**：衡量量化前后向量的欧氏距离（按向量维度求和后取均值）。推动编码器输出的连续向量靠近其量化点。
 
-**为什么 detach zq？** 我们希望梯度推动 z 向 zq 靠近，而不是推动 zq 向 z 靠近（zq 是固定的量化点）。
+**为什么 detach zq？** 我们希望梯度推动 z 向 zq 靠近，而不是推动 zq 向 z 靠近（zq 是由 STE 产生的固定量化点）。注意源码中对每个向量求 `sum(dim=-1)` 再取 `mean`——这意味着 commit loss 对每个维度的偏差是等权求和的，与 BSQ 的"每个维度等价"假设一致。
 
 ### 2. Entropy Penalty（熵正则化）
 
@@ -153,9 +175,37 @@ H_codebook = -Σ (avg_prob_i) × log(avg_prob_i)
 
 **目标**：最大化码本熵（通过 `-γ × H_codebook` 实现）。这从宏观层面鼓励码本被均匀使用。
 
-#### 软熵计算
+#### Per-Sample Entropy（样本熵）
 
-在训练模式下，BSQ 使用**软熵**（soft entropy）来计算样本熵，避免离散化导致的梯度消失：
+```python
+H_sample = -Σ p_i × log(p_i)  （对每个子组的概率分布计算熵）
+```
+
+**目标**：最大化样本熵（通过 `-γ₀ × H_sample` 实现）。这鼓励每个样本的量化结果更均匀地分布在码本中，避免所有样本都映射到少数几个码本条目。
+
+**analytical 模式下的计算**（源码 `module.py:141-146`）：
+
+```python
+p = sigmoid(-4 * z / sqrt(D) * inv_temperature)  # 每个维度取 +1 的概率
+prob = stack([p, 1-p], dim=-1)                    # 每个维度 [p(+1), p(-1)]
+per_sample_entropy = get_entropy(prob, dim=-1).sum(dim=-1).mean()
+```
+
+在 analytical 模式下，不依赖子码本查找，而是直接用 sigmoid 函数计算每个维度取 ±1 的概率。这更高效且数值更稳定——每个维度的"软熵"独立计算后求和。
+
+#### Codebook Entropy（码本熵）
+
+```python
+# module.py:151-152
+avg_prob = reduce(prob, '... g d -> g d', 'mean')  # 所有样本的平均概率分布
+H_codebook = -Σ (avg_prob_i) × log(avg_prob_i)
+```
+
+**目标**：最大化码本熵（通过 `-γ × H_codebook` 实现）。这从宏观层面鼓励码本被均匀使用。注意 `avg_prob` 是对 batch 中所有样本的概率取平均后再计算熵，而非对每个样本的熵取平均。这种"先平均再计算"的方式能更好地反映码本的整体使用均匀度。
+
+#### 软熵计算（group 模式）
+
+当 `persample_entropy_compute='group'` 时（源码 `module.py:131-155`），BSQ 使用子码本距离来计算软熵：
 
 ```python
 # 将 z 按组大小切分
@@ -164,9 +214,6 @@ divided_z = rearrange(z, '... (g c) -> ... g c', c=group_size)
 # 计算与子码本的距离
 distance = -2 * einsum('... g c, d c -> ... g d', divided_z, group_codebook)
 prob = (-distance * inv_temperature).softmax(dim=-1)
-
-# 分析模式：直接用 sigmoid 计算
-p = sigmoid(-4 * z / sqrt(D) * inv_temperature)
 ```
 
 ### 3. 超参数含义
@@ -260,6 +307,8 @@ class BSQuantizer(nn.Module):
 
 **`half=True`**：将量化结果切分为 s1 和 s2 两部分，分别转换为独立的索引。这是 Kronos 层级令牌体系的基础。
 
+**关于 codebook_dim 的说明**：在默认配置中，`s1_bits=10` 且 `s2_bits=10`，因此 `codebook_dim = s1_bits + s2_bits = 20`。但这并非硬编码值——`s1_bits` 和 `s2_bits` 是构造函数的可配置参数，可以根据任务需求调整（例如增大到 12+12=24 以获得更大的码本容量，或减小到 8+8=16 以降低预测难度）。修改这两个参数会直接影响 `HierarchicalEmbedding` 的词汇表大小和 `DualHead` 的输出维度，需要同步调整整个模型。
+
 ---
 
 ## 可复用的设计经验
@@ -348,4 +397,4 @@ with torch.no_grad():
 ---
 
 **文档元信息**
-难度：⭐⭐⭐⭐ | 类型：专家设计 | 预计阅读时间：30 分钟
+难度：⭐⭐⭐⭐ | 类型：专家设计 | 预计阅读时间：30 分钟 | 更新日期：2026-04-11

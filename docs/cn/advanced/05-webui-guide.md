@@ -171,6 +171,8 @@ POST /api/load-model
 
 可选的 `model_name` 值：`mini`、`small`、`base`、`large`。
 
+> **注意**：`mini` 模型使用 `Kronos-Tokenizer-2k` 分词器，其他模型使用 `Kronos-Tokenizer-base`。Web UI 会根据所选模型自动加载对应的分词器。
+
 ### 4. 执行预测
 
 ```
@@ -349,6 +351,15 @@ pip install -r webui/requirements.txt
 | [批量预测指南](03-batch-prediction.md) | ⭐⭐⭐ | 多序列并行预测 |
 | [A 股市场预测实战](04-cn-markets.md) | ⭐⭐⭐ | A 股完整预测示例 |
 
+## 相关文档
+
+- **前置**：[安装指南](../getting-started/01-installation.md) — 环境配置
+- **前置**：[KronosPredictor 使用指南](../core-concepts/04-predictor.md) — 了解预测参数含义
+- **并行**：[批量预测指南](03-batch-prediction.md) — 编程方式批量预测
+- **实战**：[A 股市场预测实战](04-cn-markets.md) — A 股完整预测流程
+- **参考**：[模型选型指南](07-model-comparison.md) — mini / small / base / large 对比
+
 ---
 **文档元信息**
 难度：⭐⭐ | 类型：进阶指南 | 预计阅读时间：15 分钟
+更新日期：2026-04-11

@@ -98,13 +98,78 @@
 
 | 中文术语 | 英文原文 | 定义 |
 |---------|----------|------|
-| 滑动窗口 | Sliding Window | 在时间序列上按固定大小移动的窗口，用于采样训练数据 |
+| 滑动窗口 | Sliding Window | 在时间序列上按固定大小移动的窗口，用于采样训练数据和推理时的上下文管理 |
 | 回看窗口 | Lookback Window | 模型输入使用的历史数据长度 |
 | 预测窗口 | Prediction Window | 模型预测的未来数据长度 |
-| 最大上下文 | Max Context | 模型能处理的最大令牌序列长度（Kronos 默认 512） |
-| 涨跌停 | Price Limit | A 股市场中单日价格涨跌幅不超过 ±10% 的限制 |
+| 最大上下文 | Max Context | 模型能处理的最大令牌序列长度。Kronos-small/base/large 默认 512，Kronos-mini 为 2048。超过此长度的历史令牌被丢弃 |
+| 裁剪 | Clip | 将标准化后的值限制在 `[-clip, clip]` 范围内（默认 clip=5），抑制极端异常值的影响 |
+| 涨跌停 | Price Limit | A 股市场中单日价格涨跌幅不超过特定比例的限制。主板 ±10%，创业板/科创板 ±20%，ST 股 ±5%，北交所 ±30% |
+| 复权 | Adjusted Price | 对历史价格进行分红、送股等因素的调整，使价格序列连续可比。Kronos 不要求复权数据 |
+| 停牌 | Trading Suspension | 股票暂停交易的状态，数据中可能记录为开盘价为 0 或 NaN，需要在预测前处理 |
+| 实例级标准化 | Instance-Level Normalization | 对每条预测序列独立计算均值和标准差的 z-score 标准化方法，是 KronosPredictor 的默认行为 |
+| Qlib | Qlib | 微软开源的量化投资平台，提供中国 A 股数据接口 |
+| HuggingFace Hub | HuggingFace Hub | 模型和数据集的托管平台，Kronos 的预训练模型存储于此 |
+| Safetensors | Safetensors | 一种安全的模型权重文件格式，避免了 pickle 的安全风险 |
 
 ---
 
+## API 与组件
+
+| 中文术语 | 英文原文 | 定义 |
+|---------|----------|------|
+| KronosPredictor | KronosPredictor | Kronos 的高层预测接口（`kronos.py:484-661`），将数据预处理、分词编码、自回归推理、解码还原和后处理封装为 `predict()` 和 `predict_batch()` 两个方法 |
+| predict() | predict() | 单序列预测方法，默认参数为 `T=1.0, top_k=0, top_p=0.9, sample_count=1` |
+| predict_batch() | predict_batch() | 批量预测方法，要求所有序列具有相同的历史长度 |
+| auto_regressive_inference | auto_regressive_inference | 自回归推理函数（`kronos.py:389-469`），维护滑动窗口缓冲区逐时间步生成令牌。默认参数为 `top_p=0.99, sample_count=5` |
+| sample_from_logits | sample_from_logits | 令牌采样函数（`kronos.py:373-386`），支持温度、top-k、top-p 过滤 |
+| generate() | generate() | KronosPredictor 内部方法，封装 tensor 设备转移和 `auto_regressive_inference()` 调用 |
+| decode_s1 | decode_s1 | Kronos 模型的分步解码方法（`kronos.py:278-308`），返回 s1 logits 和 Transformer 上下文 |
+| decode_s2 | decode_s2 | Kronos 模型的分步解码方法（`kronos.py:310-328`），基于 s1 采样结果和 Transformer 上下文预测 s2 |
+| PyTorchModelHubMixin | PyTorchModelHubMixin | HuggingFace 提供的混入类，为模型添加 `from_pretrained()` 和 `save_pretrained()` 能力 |
+
+---
+
+## 模型标识
+
+| 中文术语 | 英文原文 | 定义 |
+|---------|----------|------|
+| Kronos-mini | Kronos-mini | 最小规模模型（4.1M 参数），上下文长度 2048，使用专用分词器 `Kronos-Tokenizer-2k` |
+| Kronos-small | Kronos-small | 小规模模型（24.7M 参数），上下文长度 512，使用 `Kronos-Tokenizer-base` 分词器 |
+| Kronos-base | Kronos-base | 标准规模模型（102.3M 参数），上下文长度 512，使用 `Kronos-Tokenizer-base` 分词器 |
+| Kronos-large | Kronos-large | 最大规模模型（499.2M 参数），上下文长度 512，使用 `Kronos-Tokenizer-base` 分词器。未开源 |
+| Kronos-Tokenizer-2k | Kronos-Tokenizer-2k | Kronos-mini 专用分词器，支持 2048 上下文长度。与其他模型的分词器不通用 |
+| Kronos-Tokenizer-base | Kronos-Tokenizer-base | Kronos-small/base/large 共用分词器，支持 512 上下文长度。可在三个模型间自由切换而无需更换 |
+
+---
+
+## 相关文档
+
+术语的详细解释分散在各主题文档中，以下是快速索引：
+
+| 术语 | 详细文档 |
+|------|---------|
+| BSQ、量化器、承诺损失、熵正则化 | [BSQ 量化算法原理](../architecture/02-bsq-algorithm.md) |
+| s1/s2、层级令牌、DependencyAwareLayer | [层级令牌体系](../core-concepts/05-hierarchical-tokens.md) |
+| KronosTokenizer、编码器、解码器 | [KronosTokenizer 详解](../core-concepts/02-tokenizer.md) |
+| Transformer 组件、RoPE、SwiGLU、Pre-Norm | [Transformer 设计分析](../architecture/03-transformer-design.md) |
+| 自回归推理、滑动窗口、采样策略 | [KronosPredictor 使用指南](../core-concepts/04-predictor.md) |
+| 源码实现细节、行号引用 | [源码走读](../architecture/04-source-code-walkthrough.md) |
+| 涨跌停、A 股数据处理 | [A 股市场预测实战](../advanced/04-cn-markets.md) |
+| 模型选型、参数量、上下文长度、分词器搭配 | [模型对比与选型指南](../advanced/07-model-comparison.md) |
+| 微调、DDP、Qlib、训练超参数 | [Qlib 微调指南](../advanced/01-finetune-qlib.md) / [CSV 微调指南](../advanced/02-finetune-csv.md) |
+
+## Kronos 特有术语
+
+以下术语是 Kronos 项目中特有的，在其他项目中可能含义不同：
+
+| 术语 | Kronos 中的含义 | 容易混淆的点 |
+|------|----------------|-------------|
+| Tokenizer（分词器） | KronosTokenizer，包含编码器-解码器的完整模型 | 不是 NLP 中的文本分词器（如 BPE），而是将连续 OHLCV 向量量化为离散令牌 |
+| Token（令牌） | BSQ 量化后的离散索引 | 不是文本单词，而是 K 线的离散化表示 |
+| Decoder（解码器） | KronosTokenizer 的重建模块 | 不是语言模型的自回归解码器——它只做令牌到 OHLCV 的映射 |
+| Context（上下文） | 输入的历史令牌序列 | 与 LLM 的上下文概念相同，但 Kronos 的上下文是 K 线令牌而非文本 |
+| Vocabulary（词汇表） | s1 或 s2 的所有可能令牌集合 | 大小为 2^10 = 1024，远小于 LLM 的数万词汇量 |
+
+---
 **文档元信息**
-类型：参考文档 | 词条数：55+
+类型：参考文档 | 词条数：90+ | 更新日期：2026-04-12

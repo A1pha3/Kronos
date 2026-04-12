@@ -313,6 +313,15 @@ plt.show()
 | [A 股市场预测实战](04-cn-markets.md) | ⭐⭐⭐ | 完整的 A 股预测示例 |
 | [KronosPredictor 使用指南](../core-concepts/04-predictor.md) | ⭐⭐ | 详细参数说明 |
 
+## 相关文档
+
+- **前置**：[KronosPredictor 使用指南](../core-concepts/04-predictor.md) — 单条预测的基础用法
+- **实战**：[A 股市场预测实战](04-cn-markets.md) — 批量预测 A 股多只个股
+- **实战**：[使用场景与实战案例](06-use-cases.md) — 多场景模拟与置信区间
+- **工具**：[Web UI 使用指南](05-webui-guide.md) — 浏览器界面进行预测
+- **参考**：[模型选型指南](07-model-comparison.md) — 选择适合批量预测的模型规模
+
 ---
 **文档元信息**
 难度：⭐⭐⭐ | 类型：进阶指南 | 预计阅读时间：15 分钟
+更新日期：2026-04-11

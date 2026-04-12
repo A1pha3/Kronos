@@ -393,6 +393,15 @@ python finetune_csv/train_sequential.py --config config.yaml
 | [Qlib 微调指南](01-finetune-qlib.md) | ⭐⭐⭐ | 对比两种微调方式 |
 | [源码走读](../architecture/04-source-code-walkthrough.md) | ⭐⭐⭐⭐ | 深入理解训练代码 |
 
+## 相关文档
+
+- **并行**：[Qlib 微调指南](01-finetune-qlib.md) — A 股专用微调流水线（对比参考）
+- **前置**：[KronosTokenizer 详解](../core-concepts/02-tokenizer.md) — 理解分词器训练目标
+- **前置**：[KronosPredictor 使用指南](../core-concepts/04-predictor.md) — 理解预测模型结构
+- **进阶**：[源码走读](../architecture/04-source-code-walkthrough.md) — 深入训练代码细节
+- **实战**：[使用场景与实战案例](06-use-cases.md) — 微调后的应用示例
+
 ---
 **文档元信息**
 难度：⭐⭐⭐ | 类型：进阶指南 | 预计阅读时间：20 分钟
+更新日期：2026-04-11

@@ -123,12 +123,61 @@ pred_df = predictor.predict(
 
 每次预测生成 `sample_count` 个独立样本，然后取平均值作为最终结果。
 
-- `sample_count=1`：单次采样，速度快但随机性大
-- `sample_count=5`：5 次采样取平均，更稳定但耗时约 5 倍
+- `sample_count=1`：单次采样，资源开销较低，但结果随机性更明显
+- `sample_count>1`：多条路径做平均，结果通常更平滑，但会增加计算开销
 
 ### 返回值
 
 返回 `pandas.DataFrame`，包含 `open`、`high`、`low`、`close`、`volume`、`amount` 列，以 `y_timestamp` 为索引。
+
+---
+
+## 采样参数深入分析
+
+### 温度 T 的数学含义
+
+温度参数通过缩放 logits 来控制采样分布的"尖锐度"：
+
+```
+logits_scaled = logits / T
+probabilities = softmax(logits_scaled)
+```
+
+- **T < 1**：分布更尖锐，高概率令牌被进一步放大，低概率令牌被进一步抑制
+- **T > 1**：分布更平坦，低概率令牌获得更多机会，输出更多样化
+- **T → 0**：近似贪婪解码（总是选概率最高的令牌），但 T=0 在数学上未定义，实践中用 `T=0.1` 或 `top_k=1` 代替
+
+**极端示例**：假设某时间步有 3 个候选令牌，logits 分别为 `[2.0, 1.0, 0.5]`：
+
+| T | softmax 输出概率 | 最大概率令牌占比 |
+|---|-----------------|----------------|
+| 0.1 | [0.993, 0.007, 0.000] | 99.3% |
+| 0.5 | [0.705, 0.259, 0.036] | 70.5% |
+| 1.0 | [0.506, 0.302, 0.192] | 50.6% |
+| 2.0 | [0.378, 0.333, 0.289] | 37.8% |
+
+可见 T=0.1 时，top-1 令牌的概率从原始的 50.6% 被放大到 99.3%，几乎等价于确定性选择。
+
+### top_k 和 top_p 的组合行为
+
+源码中 `sample_from_logits` 先执行 top_k 过滤，再执行 top_p 过滤，形成两级筛选：
+
+1. **top_k 过滤**（`top_k > 0` 时启用）：只保留概率最高的 `top_k` 个令牌，将其余令牌的 logits 设为 `-inf`
+2. **top_p 过滤**（`top_p < 1.0` 时启用）：在 top_k 结果上，按概率从高到低排序，保留累计概率刚好超过 `top_p` 的最小令牌集合
+3. **组合使用**：先用 top_k 粗筛（如保留 top 50 个令牌），再用 top_p 精调（如在 50 个中保留累计概率 90% 的令牌）
+
+当 `top_k=0, top_p=1.0` 时，两级筛选都被禁用，采样使用完整的 softmax 分布。
+
+### 常见参数配置
+
+| 场景 | T | top_k | top_p | sample_count | 效果 |
+|------|---|-------|-------|-------------|------|
+| 稳定预测 | 0.5 | 0 | 0.9 | 5 | 保守采样 + 多次平均，输出高度一致 |
+| 标准预测 | 1.0 | 0 | 0.9 | 3 | 平衡多样性与稳定性 |
+| 探索性模拟 | 1.5 | 0 | 0.95 | 10 | 生成多样化路径，适合蒙特卡洛场景分析 |
+| 确定性预测 | 0.1 | 1 | 1.0 | 1 | 近似贪婪解码，每次输出完全相同 |
+
+> **注意**：`top_k=1` 等价于贪婪解码（总是选概率最高的令牌），此时 T 和 top_p 参数不再有实际效果。`sample_count > 1` 配合 `top_k=1` 也无意义——每个样本都会选取相同的令牌。
 
 ---
 
@@ -298,29 +347,50 @@ for i in range(pred_len):
 `sample_count` 的实现方式是**将采样维度扩展到 batch 维度**，而非串行循环。源码中的关键操作（`kronos.py:394`）：
 
 ```python
-# 将单条数据复制 sample_count 份，拼接到 batch 维度
-x = x.unsqueeze(1).repeat(1, sample_count, 1, 1)
-x = x.reshape(-1, x.size(1), x.size(2))
-# 变换前: (batch=1, seq_len=400, features=6)
-# 变换后: (batch=sample_count, seq_len=400, features=6)
+# 步骤 1: 在 seq_len 维度前插入 sample_count 维度并复制
+x = x.unsqueeze(1).repeat(1, sample_count, 1, 1)      # (B, S, L, F) → (B, N, S, L, F)
+# 步骤 2: 将 batch 与 sample_count 合并为一个维度
+x = x.reshape(-1, x.size(1), x.size(2))                # → (B*N, L, F)
+# 完整变换: (B, seq_len, feat) → (B, sample_count, seq_len, feat) → (B*sample_count, seq_len, feat)
 ```
 
-这意味着 `sample_count=5` 时，5 条采样路径在 GPU 上**并行计算**，而非串行执行 5 次。推理结束后再 reshape 回 `(1, sample_count, pred_len, 6)` 并沿 `sample_count` 维度取平均。
+这意味着 `sample_count=5` 时，代码会把同一份输入复制为 5 条并行路径，再一起送入后续推理流程。
 
-**实际 batch 大小**：在 `predict_batch()` 中，实际 batch 大小为 `batch_num × sample_count`。例如 `batch_num=3, sample_count=5` 时实际 batch 为 15，需注意 GPU 显存是否足够。
+**关键细节：为什么多个样本会产生不同的结果？** 相同输入在扩展后的每条路径上会经历同样的预处理，但真正引入差异的是每一步的令牌采样：`sample_from_logits()` 会按概率分布抽取 `s1` 和 `s2`，不同路径因此逐步分叉。这里应理解为“输入被复制后并行生成”，而不是“只做一次编码后所有路径共享中间结果”。
 
-### sample_count 对推理时间和稳定性的量化影响
+推理结束后，结果被重塑回原始维度结构：
 
-以下为 `Kronos-small` 在 CPU 上的参考数据（`lookback=400, pred_len=120`）：
+```python
+z = z.reshape(-1, sample_count, z.size(1), z.size(2))  # (B*N, L, F) → (B, N, L, F)
+preds = np.mean(preds, axis=1)                           # 沿 sample_count 维度取平均 → (B, L, F)
+```
 
-| `sample_count` | 推理时间（近似） | 预测结果 `close` 列标准差（多次运行间） |
-|----------------|-----------------|--------------------------------------|
-| 1 | ~8 秒 | 高（每次运行差异显著） |
-| 3 | ~24 秒 | 中等 |
-| 5 | ~40 秒 | 低（结果趋于稳定） |
-| 10 | ~80 秒 | 极低（边际收益递减） |
+**解码阶段的重要细节**：在生成所有令牌后，函数只解码**最后 `max_context` 个令牌**（而非完整历史）：
 
-**经验法则**：`sample_count=3-5` 通常是在速度和稳定性之间的最佳平衡点。超过 10 后，推理时间线性增长但稳定性的边际改善很小。
+```python
+context_start = max(0, total_seq_len - max_context)
+input_tokens = [full_pre[:, context_start:total_seq_len], full_post[:, context_start:total_seq_len]]
+z = tokenizer.decode(input_tokens, half=True)
+```
+
+这意味着当 `pred_len > 0` 时，解码范围包括：历史尾部 + 全部生成令牌，但总长度不超过 `max_context`。如果历史很长，最早的一部分历史不会被解码还原。随后在 `generate()` 中，只截取预测部分返回：
+
+```python
+preds = preds[:, -pred_len:, :]  # 只返回预测部分，不包含已解码的历史
+```
+
+**实际 batch 大小**：在 `predict_batch()` 中，实际 batch 大小会变成 `批量序列数 × sample_count`。因此 `sample_count` 不只影响结果平滑程度，也会放大显存和内存压力。
+
+**参数默认值层次**：`KronosPredictor.predict()` 的默认值为 `T=1.0, top_k=0, top_p=0.9, sample_count=1`，而内部 `auto_regressive_inference()` 函数的默认值为 `top_p=0.99, sample_count=5`。由于 `predict()` 将自己的参数值传递给 `generate()`，再由 `generate()` 调用 `auto_regressive_inference()`，因此**用户实际使用时由 `predict()` 的默认值控制行为**，而非内部函数的默认值。
+
+### 如何理解 sample_count 的代价
+
+从源码实现可以确认两点：
+
+1. `sample_count` 越大，被复制出来的并行路径越多
+2. 最终输出会对这些路径在采样维度上取平均
+
+因此，增大 `sample_count` 往往会让结果更平滑，但也会增加计算和显存压力。至于增加多少、是否值得，需要结合你的硬件与业务目标实测。
 
 ---
 
@@ -328,7 +398,7 @@ x = x.reshape(-1, x.size(1), x.size(2))
 
 ### 误区 1：sample_count 越大越好
 
-**正确理解**：增加采样次数能降低随机性，但边际效益递减。通常 `sample_count=3-5` 已足够。更大的 `sample_count` 会线性增加推理时间。
+**正确理解**：增加采样次数通常会降低单次结果的随机波动，但代价是更多资源占用。合适的取值取决于你更关注“稳定性”还是“响应速度”。
 
 ### 误区 2：更长的历史数据一定更好
 
@@ -386,7 +456,7 @@ for sc in [1, 3, 5, 10]:
 - [ ] `predict()` 方法内部依次执行哪些步骤？（提示：8 步流水线）
 - [ ] 如果只想要确定性最高的预测结果，应如何设置 `T` 和 `top_k`？
 - [ ] 历史数据长度超过 `max_context=512` 时会发生什么？
-- [ ] `sample_count=5` 与 `sample_count=1` 相比，推理时间大约差几倍？
+- [ ] 为什么增大 `sample_count` 会同时影响结果平滑程度和资源占用？
 - [ ] `predict_batch()` 对输入数据有什么限制条件？
 
 ---
@@ -396,7 +466,9 @@ for sc in [1, 3, 5, 10]:
 - **前置**：[快速开始](../getting-started/02-quickstart.md) ⭐ — 基础使用
 - **相关**：[Kronos 模型详解](03-model.md) ⭐⭐ — 理解模型内部工作原理
 - **进阶**：[批量预测指南](../advanced/03-batch-prediction.md) ⭐⭐⭐ — 批量预测实践
+- **参考**：[使用场景与实战案例](../advanced/06-use-cases.md) ⭐⭐ — 不同场景的参数配置建议
+- **参考**：[模型对比与选型](../advanced/07-model-comparison.md) ⭐⭐ — 不同模型的性能特征
 
 ---
 **文档元信息**
-难度：⭐⭐ | 类型：核心概念 | 预计阅读时间：20 分钟
+难度：⭐⭐ | 类型：核心概念 | 更新日期：2026-04-11 | 预计阅读时间：25 分钟

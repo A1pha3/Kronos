@@ -257,6 +257,18 @@ loss = (recon_loss + bsq_loss) / 2
 1. **Commit Loss**：衡量量化前后的距离，鼓励连续向量靠近量化点
 2. **熵正则化**：鼓励码本被均匀使用，避免"死码"问题
 
+### 为什么需要两路重建损失？
+
+损失函数同时优化 `z_pre`（仅 s1 比特重建）和 `z`（完整码本重建）两路重建。这个设计有一个容易忽略的深层目的：
+
+- **`z_pre` 损失的作用**：迫使 s1 比特**独立地**编码足够多的信息。如果没有这个辅助损失，s1 比特可能只编码一些次要信息，而把重要信息全部"推"给 s2 比特——因为最终解码时 s1 和 s2 是一起使用的。辅助损失确保了即使只看 s1，也能获得有意义的粗粒度重建。
+- **`z` 损失的作用**：确保完整码本（s1 + s2）能够高质量地重建原始数据，这是分词器的最终目标。
+- **两者之和**：在"粗粒度独立可用"和"完整重建高质量"之间取得平衡。
+
+### 总损失为什么要除以 2？
+
+`(recon_loss + bsq_loss) / 2` 中的除以 2 是为了平衡重建损失和量化损失的量级。`recon_loss` 是两路 MSE 之和（量级较大），而 `bsq_loss` 包含 commit loss 和熵正则化（量级较小）。如果不除以 2，重建损失可能主导梯度方向，导致量化约束被忽略。
+
 ### 调参失误的影响
 
 | 参数 | 设置过大 | 设置过小 |
@@ -266,6 +278,62 @@ loss = (recon_loss + bsq_loss) / 2
 | `gamma`（码本熵权重） | 码本被强制均匀使用，但个别码字可能无意义 | 部分码字从未被使用（"死码"），表达能力浪费 |
 
 如果微调时发现验证损失不收敛，可以尝试：降低 `beta`（放宽量化约束）或降低 `gamma0`/`gamma`（放松均匀性要求）。
+
+---
+
+## 训练与推理的路径差异
+
+上一节从损失函数的角度解释了 `forward()` 的双路重建，但一个容易被忽略的关键事实是：**推理时使用的 `encode()` 和 `decode()` 与训练时的 `forward()` 走的是完全不同的路径**。理解这种不对称性，对于正确使用分词器 API 和排查问题至关重要。
+
+### encode()：跳过解码器的"快速通道"
+
+```python
+# 摘自 model/kronos.py — KronosTokenizer.encode()
+def encode(self, x, half=False):
+    z = self.embed(x)
+    for layer in self.encoder:
+        z = layer(z)
+    z = self.quant_embed(z)
+    bsq_loss, quantized, z_indices = self.tokenizer(z, half=half, collect_metrics=False)
+    return z_indices  # 只返回索引，完全跳过解码器
+```
+
+`encode()` 的数据流是：**embed -> encoder -> quant_embed -> BSQ -> 返回索引**。它从不经过 `post_quant_embed`、`decoder` 或 `head`。这是合理的——推理阶段的目标是提取离散令牌，不需要重建原始数据，因此跳过解码器避免了约一半的计算量。
+
+此外，`collect_metrics=False` 意味着 BSQ 量化器在 `encode()` 中不计算样本熵和码本熵指标。这些指标仅在训练时用于熵正则化损失，推理时跳过可以节省不必要的计算开销。
+
+### decode()：仅走完整码本路径
+
+```python
+# 摘自 model/kronos.py — KronosTokenizer.decode()
+def decode(self, x, half=False):
+    quantized = self.indices_to_bits(x, half)  # 索引转回二值向量
+    z = self.post_quant_embed(quantized)        # 仅使用完整码本路径
+    for layer in self.decoder:
+        z = layer(z)
+    z = self.head(z)
+    return z
+```
+
+`decode()` 的数据流是：**indices_to_bits -> post_quant_embed -> decoder -> head**。它只经过 `post_quant_embed`（完整码本维度 `s1_bits + s2_bits` -> `d_model`），**从不经过 `post_quant_embed_pre`**（粗粒度路径）。
+
+这意味着 `forward()` 中的 `z_pre` 粗粒度重建路径（`post_quant_embed_pre` -> decoder -> head）是一个**纯训练辅助结构**。它通过辅助损失鼓励 s1 比特独立编码有意义的粗粒度信息，但在推理时完全不会用到。
+
+### 三条路径对比
+
+| 方法 | 数据流路径 | 是否经过解码器 | 解码器遍历次数 | 用途 |
+|------|-----------|---------------|---------------|------|
+| `forward()` | embed -> encoder -> quant_embed -> BSQ -> **双路解码** | 是 | 2 次（z_pre 一次 + z 一次） | 训练：计算损失 |
+| `encode()` | embed -> encoder -> quant_embed -> BSQ | 否 | 0 次 | 推理：提取令牌 |
+| `decode()` | indices_to_bits -> post_quant_embed -> decoder -> head | 是 | 1 次 | 推理：还原数据 |
+
+### 为什么推理不需要 z_pre 路径？
+
+`z_pre` 路径的设计目的是在训练时提供一个**辅助监督信号**：仅用 s1 比特的量化结果重建原始数据，并计算 MSE 损失。这迫使 s1 比特独立编码足够多的粗粒度信息（主要价格走势），使得层级令牌体系（s1 捕捉主趋势 + s2 捕捉修正细节）真正有效。
+
+但在推理时，`decode()` 拿到的是完整的令牌（s1 + s2），通过完整码本路径 `post_quant_embed` 映射后进入解码器，已经包含了所有信息。此时使用仅有 s1 比特的粗粒度路径毫无意义——它只会给出更低精度的重建，完全没有必要。
+
+**记忆口诀**：训练时"双路同行"（z_pre 辅助损失 + z 主损失），推理时"各取所需"（encode 只提取令牌，decode 只走完整路径）。
 
 ---
 
@@ -369,7 +437,9 @@ print(f"重建形状: {reconstructed.shape}")  # 应为 (2, 16, 6)
 - **前置**：[项目总览](01-overview.md) ⭐⭐ — 理解两阶段框架
 - **相关**：[层级令牌体系](05-hierarchical-tokens.md) ⭐⭐ — s1/s2 的设计原理
 - **进阶**：[BSQ 量化算法原理](../architecture/02-bsq-algorithm.md) ⭐⭐⭐⭐ — 深入理解量化数学
+- **参考**：[术语表](../references/glossary.md) — 概念速查
+- **参考**：[源码走读](../architecture/04-source-code-walkthrough.md) ⭐⭐⭐⭐ — KronosTokenizer 源码逐行解读
 
 ---
 **文档元信息**
-难度：⭐⭐ | 类型：核心概念 | 预计阅读时间：15 分钟
+难度：⭐⭐ | 类型：核心概念 | 更新日期：2026-04-11 | 预计阅读时间：15 分钟

@@ -296,9 +296,13 @@ print(f"负值数量: {(x < 0).sum()}")
 # 检查标准化后的分布
 x_mean, x_std = np.mean(x, axis=0), np.std(x, axis=0)
 x_norm = (x - x_mean) / (x_std + 1e-5)
+x_clipped = np.clip(x_norm, -5, 5)  # KronosPredictor 内部会执行 clip
 print(f"标准化后范围: [{x_norm.min():.2f}, {x_norm.max():.2f}]")
 print(f"标准化后 >5 的比例: {(np.abs(x_norm) > 5).mean():.4f}")
+print(f"clip 后范围: [{x_clipped.min():.2f}, {x_clipped.max():.2f}]")
 ```
+
+> **注意**：KronosPredictor 的标准化流程是 `z-score → clip(-5, 5)`。如果你的数据 clip 后仍有大量值被裁剪（标准化后 >5 的比例 >1%），说明数据中可能存在异常值需要先处理。
 
 ### DDP / torchrun 相关错误
 
@@ -329,12 +333,12 @@ torchrun --standalone --nproc_per_node=1 finetune/train_tokenizer.py
 
 **可能原因与解决方法**：
 
-| 原因 | 解决方法 |
-|------|---------|
-| `lookback` 过小（< 64） | 增大到至少 200 |
-| 温度 `T` 过低（如 0.01） | 增大到 0.8-1.2 |
-| 数据本身波动极小 | 检查输入数据是否异常 |
-| 模型未正确加载 | 确认 `from_pretrained()` 成功 |
+| 原因 | 解决方法 | 为什么有效 |
+|------|---------|-----------|
+| `lookback` 过小（< 64） | 增大到至少 200 | 模型需要足够的历史数据来捕捉价格波动模式 |
+| 温度 `T` 过低（如 0.01） | 增大到 0.8-1.2 | 极低温度使采样退化为确定性选择，失去多样性 |
+| 数据本身波动极小 | 检查输入数据是否异常 | 如果历史数据几乎不变，模型会延续这个模式 |
+| 模型未正确加载 | 确认 `from_pretrained()` 成功 | 模型权重未加载时，输出接近随机初始化 |
 
 ### 预测结果与真实值偏差很大
 
@@ -347,6 +351,44 @@ torchrun --standalone --nproc_per_node=1 finetune/train_tokenizer.py
 5. **调整温度**：`T=1.0` 是推荐起点
 
 > **注意**：金融预测本身具有高度不确定性。模型预测反映的是基于历史模式的概率分布，不是确定性预测。
+
+### 预测结果包含负数价格
+
+**可能原因**：
+
+Kronos 在标准化后的空间进行预测，反标准化时可能产生负数（特别是当历史波动极大或预测步数很长时）。
+
+**解决方法**：
+
+```python
+# 后处理：将负数价格裁剪为 0
+for col in ['open', 'high', 'low', 'close']:
+    pred_df[col] = pred_df[col].clip(lower=0)
+
+# 更好的方法：使用对数价格作为输入（需要自定义预处理）
+```
+
+### 预测的 OHLC 逻辑不一致（如 high < low）
+
+**可能原因**：Kronos 将每个价格列独立预测，不保证 OHLC 之间的逻辑关系。
+
+**后处理修复**：
+
+```python
+import numpy as np
+
+def fix_ohlc_logic(pred_df):
+    """修复预测结果中的 OHLC 逻辑不一致"""
+    for i in range(len(pred_df)):
+        o, h, l, c = pred_df.at[i, 'open'], pred_df.at[i, 'high'], \
+                      pred_df.at[i, 'low'], pred_df.at[i, 'close']
+        # 确保 high >= max(open, close) 且 low <= min(open, close)
+        pred_df.at[i, 'high'] = max(h, o, c)
+        pred_df.at[i, 'low'] = min(l, o, c)
+    return pred_df
+
+pred_df = fix_ohlc_logic(pred_df)
+```
 
 ---
 

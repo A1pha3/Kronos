@@ -102,6 +102,10 @@ from model import Kronos, KronosTokenizer, KronosPredictor
 
 tokenizer = KronosTokenizer.from_pretrained("NeoQuasar/Kronos-Tokenizer-base")
 model = Kronos.from_pretrained("NeoQuasar/Kronos-small")
+
+# 如果使用 Kronos-mini，需要搭配 Kronos-Tokenizer-2k 分词器：
+# tokenizer = KronosTokenizer.from_pretrained("NeoQuasar/Kronos-Tokenizer-2k")
+# model = Kronos.from_pretrained("NeoQuasar/Kronos-mini")
 predictor = KronosPredictor(model, tokenizer, max_context=512)
 
 df = pd.read_csv("./examples/data/XSHG_5min_600977.csv")
@@ -140,6 +144,18 @@ print(f"最终预测步 90% 置信区间: [{p5[-1]:.2f}, {p95[-1]:.2f}]")
 - `mean_pred`：多条路径的平均值，反映模型的中心预期
 - `p5` / `p95`：90% 置信区间的上下界，反映预测的不确定性范围
 - 置信区间越宽，说明模型对未来走势越不确定
+
+### 如何解读多场景模拟结果
+
+多场景模拟的价值不在于单条路径的精确性，而在于**整体分布特征**。以下是几个关键的解读维度：
+
+1. **趋势一致性**：如果 10 条路径中有 7 条以上呈现相同的趋势方向（上涨/下跌），说明模型对该方向的置信度较高。如果涨跌各半，说明市场处于高不确定状态。
+
+2. **置信区间宽度**：p5-p95 的宽度直接反映不确定性。宽度随时间步增长是正常的（远期更不确定），但如果初始几步的宽度就已经很大，说明模型对短期走势也缺乏信心。
+
+3. **路径收敛性**：观察路径在哪些时间点开始"发散"。早期发散通常意味着近期历史信号弱；晚期发散则是正常的远期不确定性。
+
+4. **极端路径分析**：关注 p5 和 p95 对应的极端路径，它们代表的不是"最可能的结果"，而是"合理的不确定性边界"。如果实际走势超出了这个边界，说明出现了模型未能捕捉的因素（如突发政策变化）。
 
 ---
 
@@ -250,6 +266,69 @@ pred_df = predictor.predict(df=x_df, x_timestamp=x_ts, y_timestamp=y_ts, pred_le
 
 ---
 
+## 场景 7：预测结果质量评估
+
+如何判断一次预测结果是否"合理"？以下提供一个系统化的评估框架：
+
+### 基础检查
+
+```python
+import numpy as np
+
+def evaluate_prediction(x_df, pred_df):
+    """基础预测质量检查"""
+    issues = []
+
+    # 1. 连续性检查：相邻K线不应出现极端跳变
+    for col in ['open', 'high', 'low', 'close']:
+        changes = pred_df[col].pct_change().dropna()
+        max_change = changes.abs().max()
+        if max_change > 0.3:  # 单步变化超过30%
+            issues.append(f"{col} 单步最大变化 {max_change:.1%}，可能异常")
+
+    # 2. OHLC 逻辑检查：high >= max(open,close), low <= min(open,close)
+    pred_df_check = pred_df.copy()
+    violations = (
+        (pred_df_check['high'] < pred_df_check[['open', 'close']].max(axis=1)).sum() +
+        (pred_df_check['low'] > pred_df_check[['open', 'close']].min(axis=1)).sum()
+    )
+    if violations > 0:
+        issues.append(f"有 {violations} 根K线违反 high >= max(open,close) 或 low <= min(open,close) 的逻辑")
+
+    # 3. 价格范围合理性
+    last_close = x_df['close'].iloc[-1]
+    pred_range = (pred_df['close'].max() - pred_df['close'].min()) / last_close
+    hist_range = (x_df['close'].max() - x_df['close'].min()) / x_df['close'].iloc[-1]
+    if pred_range > hist_range * 3:
+        issues.append(f"预测波动幅度 ({pred_range:.1%}) 远大于历史波动 ({hist_range:.1%})")
+
+    if not issues:
+        print("基础检查通过：预测结果在合理范围内。")
+    else:
+        print("发现以下问题：")
+        for i, issue in enumerate(issues, 1):
+            print(f"  {i}. {issue}")
+
+    return len(issues) == 0
+
+# 使用示例
+evaluate_prediction(x_df, pred_df)
+```
+
+### 进阶评估
+
+更深入的质量评估需要对比预测结果与实际走势（需要有"未来"的真实数据）：
+
+| 指标 | 计算方式 | 参考标准 |
+|------|---------|---------|
+| MAE（平均绝对误差） | `np.abs(pred - actual).mean()` | 相对价格越小越好 |
+| 方向准确率 | `(np.sign(pred_change) == np.sign(actual_change)).mean()` | >50% 有参考价值 |
+| 趋势捕获率 | 前 N 步的趋势方向与实际一致的比例 | 短期(1-20步) > 60% 为良好 |
+
+> **重要提醒**：Kronos 的预测是概率性的，不应以"精确数值匹配"作为质量标准。更合理的评估维度是：趋势方向是否一致、波动范围是否合理、极端情况是否被覆盖。
+
+---
+
 ## 结果使用建议
 
 ### 正确使用方式
@@ -265,6 +344,37 @@ pred_df = predictor.predict(df=x_df, x_timestamp=x_ts, y_timestamp=y_ts, pred_le
 2. **无法预测突发事件**：政策变化、黑天鹅事件等不在模型的能力范围内
 3. **采样随机性**：每次运行结果可能不同，使用 `sample_count > 1` 可以获得更稳定的结果
 4. **时间戳的精度影响**：`pd.bdate_range` 不跳过法定节假日，可能在假期期间产生"虚假"预测
+
+### 预测结果与交易决策的关系
+
+Kronos 的输出不应直接转化为交易信号。以下是一个推荐的决策框架：
+
+```
+Kronos 预测结果
+      │
+      ▼
+┌─────────────────────┐
+│ 1. 趋势方向确认      │  10 条路径中有几条看涨/看跌？
+│    （多数路径一致？）  │  如果 7/10 路径看涨，趋势信号较强
+└─────────┬───────────┘
+          │
+          ▼
+┌─────────────────────┐
+│ 2. 不确定性评估      │  置信区间（p5-p95）有多宽？
+│    （区间宽度）        │  窄 = 高置信，宽 = 低置信
+└─────────┬───────────┘
+          │
+          ▼
+┌─────────────────────┐
+│ 3. 多源交叉验证      │  是否与基本面、技术指标方向一致？
+│    （结合其他信号）    │  多个信号一致 = 更可靠的决策基础
+└─────────┬───────────┘
+          │
+          ▼
+    交易决策（独立判断）
+```
+
+**关键原则**：Kronos 提供的是"如果历史模式延续，未来可能如何"的概率性参考。实际交易决策还需要考虑风险偏好、仓位管理、止损策略等综合因素。
 
 ---
 
@@ -286,6 +396,16 @@ pred_df = predictor.predict(df=x_df, x_timestamp=x_ts, y_timestamp=y_ts, pred_le
 | [批量预测指南](03-batch-prediction.md) | ⭐⭐⭐ | 多市场并行预测 |
 | [CSV 微调指南](02-finetune-csv.md) | ⭐⭐⭐ | 适配特定市场 |
 
+## 相关文档
+
+- **前置**：[快速开始](../getting-started/02-quickstart.md) — 基础预测流程
+- **前置**：[KronosPredictor 使用指南](../core-concepts/04-predictor.md) — 参数调节细节
+- **实战**：[A 股市场预测实战](04-cn-markets.md) — A 股完整预测示例
+- **进阶**：[批量预测指南](03-batch-prediction.md) — 多序列并行预测
+- **进阶**：[CSV 微调指南](02-finetune-csv.md) — 适配特定市场数据
+- **参考**：[模型选型指南](07-model-comparison.md) — 不同模型规格对比
+
 ---
 **文档元信息**
 难度：⭐⭐ | 类型：实战案例 | 预计阅读时间：20 分钟
+更新日期：2026-04-11

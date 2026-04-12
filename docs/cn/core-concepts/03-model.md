@@ -91,19 +91,32 @@ K 线数据具有严格的时间顺序：每一根 K 线的走势都受到之前
   s1_logits         s2_logits
 ```
 
-### 关键参数（来源：HuggingFace 模型仓库 config.json）
+### 关键参数
 
-| 参数 | 含义 | small 典型值 | base 典型值 |
-|------|------|-------------|------------|
-| `n_layers` | Transformer 层数 | 12 | 12 |
-| `d_model` | 模型维度 | 512 | 832 |
-| `n_heads` | 注意力头数 | 8 | 16 |
-| `ff_dim` | 前馈网络维度 | 1280 | 2048 |
-| `s1_bits` | s1 比特数 | 10 | 10 |
-| `s2_bits` | s2 比特数 | 10 | 10 |
-| `learn_te` | 时间嵌入是否可学习 | True | True |
+以下参数决定模型的规模与表达能力。预训练模型的参数配置存储在 HuggingFace Hub 上的 `config.json` 中，通过 `from_pretrained()` 加载时自动读取。
 
-> 注意：以下数值来自预训练模型的 config.json，不同版本可能不同。可通过 `model.config` 查看。
+| 参数 | 含义 | 对模型的影响 |
+|------|------|-------------|
+| `n_layers` | Transformer 层数 | 层数越多，模型能捕捉越深层的历史模式，但推理时间近似线性增长 |
+| `d_model` | 模型维度（隐藏状态维度） | 影响表达力的最关键参数。更大的 `d_model` 意味着更强的表示能力，但也需要更多训练数据 |
+| `n_heads` | 注意力头数 | 多头并行捕捉不同子空间的模式。通常 `d_model / n_heads` 为每个头的维度 |
+| `ff_dim` | 前馈网络维度 | SwiGLU 中间层维度，影响非线性变换的能力 |
+| `s1_bits` | s1 比特数 | s1 词汇表大小为 2^s1_bits，控制粗粒度令牌的表达空间 |
+| `s2_bits` | s2 比特数 | s2 词汇表大小为 2^s2_bits，控制细粒度令牌的表达空间 |
+| `learn_te` | 时间嵌入是否可学习 | `True` 使用可训练的 Embedding，`False` 使用固定的正弦编码 |
+| `token_dropout_p` | 令牌嵌入 Dropout 率 | 训练时随机将令牌嵌入置零的概率，防止过拟合 |
+
+不同规模模型的参数配置有所不同。你可以通过以下方式查看实际值：
+
+```python
+model = Kronos.from_pretrained("NeoQuasar/Kronos-small")
+print(model.config)
+# 输出包含：n_layers, d_model, n_heads, ff_dim, s1_bits, s2_bits 等参数
+```
+
+各模型的详细参数对比见 [模型对比与选型指南](../advanced/07-model-comparison.md)。Kronos-mini 的参数规模最小（4.1M 总参数），Kronos-base 最大（102.3M 参数）。
+
+> **注意**：`s1_bits` 和 `s2_bits` 在所有预训练模型中均为 10/10，保持一致。这是 BSQ 量化器将 20 维连续向量切分为两个 10 维子空间的配置。
 
 ---
 
@@ -136,10 +149,20 @@ s1_logits, s2_logits = model(s1_ids, s2_ids, stamp=timestamps, padding_mask=None
 Kronos 的一个独特设计是 **s2 的预测条件依赖于 s1 的预测结果**。以下流程摘自 `Kronos.forward()`：
 
 ```python
-# 第 1 步：预测 s1
+# 第 0 步：令牌嵌入 + 时间嵌入 + Dropout
+x = self.embedding([s1_ids, s2_ids])
+x = x + self.time_emb(stamp)
+x = self.token_drop(x)  # 训练时随机将部分令牌嵌入置零
+
+# 第 1 步：Transformer 编码
+for layer in self.transformer:
+    x = layer(x, key_padding_mask=padding_mask)
+x = self.norm(x)
+
+# 第 2 步：预测 s1
 s1_logits = self.head(x)                              # DualHead 的 proj_s1
 
-# 第 2 步：从 s1_logits 采样得到 s1_ids
+# 第 3 步：从 s1_logits 采样得到 s1_ids
 s1_probs = F.softmax(s1_logits.detach(), dim=-1)
 sample_s1_ids = torch.multinomial(s1_probs.view(-1, vocab_s1), 1)
 
@@ -160,6 +183,23 @@ if use_teacher_forcing:
 else:
     sibling_embed = self.embedding.emb_s1(sample_s1_ids)  # 使用采样 s1（默认）
 ```
+
+### 梯度截断与采样策略
+
+源码中有一个容易被忽略的细节——`s1_logits.detach()`（`kronos.py:270`）：
+
+```python
+s1_probs = F.softmax(s1_logits.detach(), dim=-1)    # 注意 .detach()
+sample_s1_ids = torch.multinomial(s1_probs.view(-1, vocab_s1), 1)
+```
+
+`.detach()` 的作用是**切断从 s2 预测到 s1 预测的梯度路径**。这意味着：
+
+- s1 的预测头部（`proj_s1`）只通过 s1 的交叉熵损失接收梯度
+- s2 的预测头部（`proj_s2`）只通过 s2 的交叉熵损失接收梯度
+- s1 的采样结果作为 s2 的条件输入，但不参与 s1 头部的梯度计算
+
+**为什么不把 s2 的梯度传导到 s1？** 如果允许梯度流通，s1 头部会同时收到来自 s1 损失和 s2 损失的信号。由于 s2 条件依赖于 s1 的采样结果，梯度会通过采样操作（`torch.multinomial`）反向传播——但 multinomial 本身是离散操作，梯度无法直接通过。即使使用 `detach()` 截断后用 `multinomial` 采样（而非使用 STE），模型仍然能通过两条独立的损失路径分别优化 s1 和 s2 的预测能力。
 
 ---
 
@@ -333,7 +373,9 @@ print(f"s2 平均熵: {s2_entropy.mean().item():.2f} bits (最大 {10.0})")
 - **前置**：[项目总览](01-overview.md) ⭐⭐ — 理解两阶段框架
 - **相关**：[层级令牌体系](05-hierarchical-tokens.md) ⭐⭐ — s1/s2 的设计与 DependencyAwareLayer
 - **进阶**：[Transformer 设计分析](../architecture/03-transformer-design.md) ⭐⭐⭐⭐ — RoPE、SwiGLU 等设计决策
+- **相关**：[KronosPredictor 使用指南](04-predictor.md) ⭐⭐ — 模型推理的实际调用方式
+- **参考**：[源码走读](../architecture/04-source-code-walkthrough.md) ⭐⭐⭐⭐ — Kronos 类的逐行解读
 
 ---
 **文档元信息**
-难度：⭐⭐ | 类型：核心概念 | 预计阅读时间：20 分钟
+难度：⭐⭐ | 类型：核心概念 | 更新日期：2026-04-11 | 预计阅读时间：20 分钟

@@ -299,24 +299,42 @@ def forward(self, x):
 
 ### Kronos
 
-**文件位置**：`kronos.py` 第 180-329 行
+**文件位置**：`kronos.py:198-328`
 
-**forward()**：
+**构造函数** `kronos.py:198-224`：
+
+```python
+def __init__(self, s1_bits, s2_bits, n_layers, d_model, n_heads, ff_dim, ...):
+    self.s1_bits = s1_bits
+    self.s2_bits = s2_bits
+    self.embedding = HierarchicalEmbedding(s1_bits, s2_bits, d_model)
+    self.time_emb = TemporalEmbedding(d_model, learn_te)
+    self.token_drop = nn.Dropout(token_dropout_p)
+    self.transformer = nn.ModuleList([
+        TransformerBlock(d_model, n_heads, ff_dim, ...)
+        for _ in range(n_layers)
+    ])
+    self.norm = RMSNorm(d_model)
+    self.head = DualHead(s1_bits, s2_bits, d_model)
+    self.dep_layer = DependencyAwareLayer(d_model, n_heads=4)
+```
+
+**forward()** `kronos.py:239-276`：
 
 ```python
 def forward(self, s1_ids, s2_ids, stamp=None, padding_mask=None,
             use_teacher_forcing=False, s1_targets=None):
-    x = self.embedding([s1_ids, s2_ids])
-    if stamp is not None: x = x + self.time_emb(stamp)
-    x = self.token_drop(x)
+    x = self.embedding([s1_ids, s2_ids])       # 层级令牌嵌入
+    if stamp is not None: x = x + self.time_emb(stamp)  # 时间特征
+    x = self.token_drop(x)                       # 令牌 Dropout
 
     for layer in self.transformer: x = layer(x, key_padding_mask=padding_mask)
-    x = self.norm(x)
+    x = self.norm(x)                             # 最终 RMSNorm
 
-    # s1 预测
-    s1_logits = self.head(x)
+    # s1 预测（kronos.py:263）
+    s1_logits = self.head(x)                     # DualHead.forward() → proj_s1
 
-    # s2 条件预测
+    # s2 条件预测（kronos.py:265-275）
     if use_teacher_forcing:
         sibling_embed = self.embedding.emb_s1(s1_targets)    # 训练：用真实 s1
     else:
@@ -336,9 +354,9 @@ def forward(self, s1_ids, s2_ids, stamp=None, padding_mask=None,
 
 ### auto_regressive_inference()
 
-**文件位置**：`kronos.py` 第 389-468 行
+**文件位置**：`kronos.py:389-469`
 
-这是推理的核心函数，值得逐段解读：
+这是推理的核心函数，值得逐段解读。注意它的默认参数与 `KronosPredictor.predict()` 不同——`predict()` 使用 `top_p=0.9, sample_count=1`，而这里的默认值是 `top_p=0.99, sample_count=5`。由于 `predict()` 会将自己的参数值传递给 `generate()` 再到此处，**用户实际使用时由 `predict()` 的默认值控制**。
 
 ```python
 def auto_regressive_inference(tokenizer, model, x, x_stamp, y_stamp,
@@ -347,9 +365,10 @@ def auto_regressive_inference(tokenizer, model, x, x_stamp, y_stamp,
     with torch.no_grad():
         x = torch.clip(x, -clip, clip)
 
-        # sample_count 扩展到 batch 维度
+        # sample_count 扩展到 batch 维度（kronos.py:~420）
         x = x.unsqueeze(1).repeat(1, sample_count, 1, 1)
         x = x.reshape(-1, x.size(1), x.size(2))
+        # 变换: (B, seq_len, feat) → (B, sample_count, seq_len, feat) → (B*sample_count, seq_len, feat)
         # 同样扩展 x_stamp 和 y_stamp
 
         # 编码历史数据
@@ -430,16 +449,35 @@ def auto_regressive_inference(tokenizer, model, x, x_stamp, y_stamp,
 
 ### KronosPredictor
 
-**文件位置**：`kronos.py` 第 482-663 行
+**文件位置**：`kronos.py:484-661`
 
-**predict() 方法**：
+**构造函数** `kronos.py:484-506`：
+
+```python
+def __init__(self, model, tokenizer, device=None, max_context=512, clip=5.0):
+    self.model = model
+    self.tokenizer = tokenizer
+    self.max_context = max_context
+    self.clip = clip
+    # 设备自动检测：CUDA → MPS → CPU
+    self.device = device or self._detect_device()
+    self.price_cols = ['open', 'high', 'low', 'close']
+    self.vol_col = 'volume'
+    self.amt_col = 'amount'
+```
+
+**generate() 方法** `kronos.py:508-517`：
+
+封装了 `auto_regressive_inference()` 的调用，负责 tensor 设备转移和结果后处理。
+
+**predict() 方法** `kronos.py:519-559`：
 
 ```python
 def predict(self, df, x_timestamp, y_timestamp, pred_len,
             T=1.0, top_k=0, top_p=0.9, sample_count=1, verbose=True):
-    # 1. 输入验证
+    # 1. 输入验证（检查必填列、NaN）
     # 2. 补齐 volume/amount
-    # 3. 时间特征提取
+    # 3. 时间特征提取（calc_time_stamps）
     # 4. 标准化 + 裁剪
     # 5. 升维: (N, 6) → (1, N, 6)
     # 6. 调用 generate()
@@ -447,7 +485,9 @@ def predict(self, df, x_timestamp, y_timestamp, pred_len,
     # 8. 返回 DataFrame
 ```
 
-**predict_batch() 方法**：核心差异在于多条序列的 stack 操作：
+**predict_batch() 方法** `kronos.py:562-661`：
+
+核心差异在于多条序列的 stack 操作和逐条反标准化：
 
 ```python
     x_batch = np.stack(x_list, axis=0)          # (B, N, 6)
@@ -456,13 +496,13 @@ def predict(self, df, x_timestamp, y_timestamp, pred_len,
 
     preds = self.generate(x_batch, x_stamp_batch, y_stamp_batch, ...)
 
-    # 逐条反标准化
+    # 逐条反标准化——每条序列使用各自的 mean 和 std
     for i in range(num_series):
         preds_i = preds[i] * (stds[i] + 1e-5) + means[i]
         pred_dfs.append(DataFrame(preds_i, columns=..., index=y_timestamp_list[i]))
 ```
 
-**注意**：每条序列使用各自的 `mean` 和 `std` 进行反标准化，确保不同尺度的序列被正确还原。
+**注意**：每条序列使用各自的 `mean` 和 `std` 进行反标准化，确保不同尺度的序列被正确还原。这在批量预测中尤其重要——如果错误地使用统一的统计量，高价股和低价股的预测结果会被严重扭曲。
 
 ---
 
@@ -534,5 +574,13 @@ def get_model_class(model_name):
 
 ---
 
+## 相关文档
+
+- [系统架构分析](01-system-architecture.md) — 从全局视角理解模块间的数据流与设计决策
+- [Transformer 设计分析](03-transformer-design.md) — 深入理解各 Transformer 组件的设计原理与替代方案
+- [开发扩展指南](../advanced/08-development-guide.md) — 基于源码理解进行二次开发与扩展的实践指南
+
+---
+
 **文档元信息**
-难度：⭐⭐⭐⭐ | 类型：专家设计 | 预计阅读时间：40 分钟
+难度：⭐⭐⭐⭐ | 类型：专家设计 | 预计阅读时间：40 分钟 | 更新日期：2026-04-11
