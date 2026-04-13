@@ -428,7 +428,11 @@ def auto_regressive_inference(tokenizer, model, x, x_stamp, y_stamp,
 
 `torch.roll` + 赋值末尾元素实现了高效的滑动窗口。
 
-**多采样聚合**：
+**缓冲区管理的边界情况**：
+
+- **buffer_len = 0**：当 `initial_seq_len = 0` 时（传入空历史），`buffer_len = min(0, max_context) = 0`，缓冲区初始化为零。生成循环中 `current_seq_len = i`，第一步的 `window_len = min(0, max_context) = 0`，此时 `input_tokens` 的序列长度为 0——这会导致 Transformer 的注意力计算异常。实际上，源码中 `predict()` 要求输入 DataFrame 至少包含一行数据（否则后续的数据处理会出错），因此这个边界在正常使用中不会触发。
+- **initial_seq_len > max_context**：当输入历史超过窗口大小时，`buffer_len = max_context`，且 `start_idx = initial_seq_len - max_context > 0`。初始化时只保留最后 `max_context` 个令牌，最早的历史被静默丢弃。这与推理过程中的滑动行为一致，但需要注意：如果用户传入 1000 步历史，前 488 步的信息完全不会被模型看到。
+- **pred_len = 0**：当 `pred_len = 0` 时，`for i in range(0)` 循环不执行，`generated_pre` 和 `generated_post` 为空张量（形状 `(batch_size, 0)`）。解码阶段会将空张量与历史令牌拼接，最终返回的是历史窗口的重建结果而非预测结果。这在功能上是一个合法操作，但在实际使用中没有意义——用户不会调用预测来获取 0 步预测。源码中没有对 `pred_len` 的显式检查，传入 0 不会报错但结果无意义。
 
 ```python
         # 解码所有令牌（历史 + 生成的）
@@ -468,7 +472,26 @@ def __init__(self, model, tokenizer, device=None, max_context=512, clip=5.0):
 
 **generate() 方法** `kronos.py:508-517`：
 
-封装了 `auto_regressive_inference()` 的调用，负责 tensor 设备转移和结果后处理。
+```python
+def generate(self, x, x_stamp, y_stamp, pred_len, T, top_k, top_p, sample_count, verbose):
+    x_tensor = torch.from_numpy(np.array(x).astype(np.float32)).to(self.device)
+    x_stamp_tensor = torch.from_numpy(np.array(x_stamp).astype(np.float32)).to(self.device)
+    y_stamp_tensor = torch.from_numpy(np.array(y_stamp).astype(np.float32)).to(self.device)
+
+    preds = auto_regressive_inference(self.tokenizer, self.model, x_tensor, x_stamp_tensor,
+                                       y_stamp_tensor, self.max_context, pred_len,
+                                       self.clip, T, top_k, top_p, sample_count, verbose)
+    preds = preds[:, -pred_len:, :]
+    return preds
+```
+
+**generate() 作为 predict() 和 auto_regressive_inference() 之间的桥梁**，承担了三项职责：
+
+1. **NumPy 到 Tensor 的转换**：`predict()` 处理的是 NumPy 数组，而 `auto_regressive_inference()` 需要 PyTorch Tensor。`generate()` 负责这个类型转换和设备转移。
+2. **参数透传**：将 `KronosPredictor` 的实例属性（`self.max_context`, `self.clip`, `self.device`）和 `predict()` 的采样参数（T, top_k, top_p, sample_count）统一传递给 `auto_regressive_inference()`。
+3. **结果截取**：`preds[:, -pred_len:, :]` 截取最后 `pred_len` 步。这一步看似冗余（`auto_regressive_inference()` 理论上只生成 `pred_len` 步），实际上是因为解码阶段会解码历史+生成的全部令牌，返回结果包含了历史重建部分。切片确保只返回预测部分。
+
+这种三层结构（predict → generate → auto_regressive_inference）的分工是：`predict()` 处理数据和标准化，`generate()` 处理 Tensor 转换和设备管理，`auto_regressive_inference()` 处理核心推理逻辑。
 
 **predict() 方法** `kronos.py:519-559`：
 
@@ -571,6 +594,52 @@ def get_model_class(model_name):
 - [ ] 我能说明 `auto_regressive_inference()` 中 `torch.roll` 的触发条件
 - [ ] 我能解释 `DependencyAwareLayer` 中残差连接方向是 `hidden_states + attn_out` 而非 `sibling_embed + attn_out`
 - [ ] 我能说出 `KronosPredictor.predict_batch()` 中每条序列独立反标准化的原因
+
+---
+
+## 常见实现陷阱
+
+以下是修改 Kronos 源码时容易引入的微妙错误：
+
+### 陷阱 1：共享解码器只遍历一次
+
+`KronosTokenizer.forward()` 中，解码器被两个 for 循环分别遍历（s1 重建和完整重建）。如果误将两个循环合并为一个：
+
+```python
+# 错误：s_pre 和 z 共享同一次遍历
+for layer in self.decoder:
+    z_pre = layer(z_pre)
+    z = layer(z)
+```
+
+这看似正确，但会改变语义——原始实现中，第二个循环开始时解码器的权重已经被第一个循环的梯度更新过（在反向传播时）。更重要的是，s1 重建（z_pre）和完整重建（z）的输入来自不同的后量化嵌入，它们应该在**独立的**前向路径中被解码器处理。将两个循环合并不会改变前向结果（因为权重尚未更新），但会影响训练时梯度的累积方式。
+
+### 陷阱 2：DependencyAwareLayer 的残差方向
+
+`DependencyAwareLayer.forward()` 返回 `self.norm(hidden_states + attn_out)`。如果误将残差改为 `self.norm(sibling_embed + attn_out)`：
+
+```python
+# 错误：残差连接到 sibling_embed
+return self.norm(sibling_embed + attn_out)
+```
+
+这会导致每步推理的输出只保留 s1 嵌入的信息，丢失了 Transformer 上下文。后续 `DualHead.proj_s2` 将基于 s1 嵌入而非 Transformer 表示来预测 s2，使整个 Transformer 编码失去意义。
+
+### 陷阱 3：滑动窗口中忘记 contiguous()
+
+`auto_regressive_inference()` 中，`current_stamp = full_stamp[:, context_start:context_end, :].contiguous()`。`.contiguous()` 确保切片后的张量在内存中是连续的。如果省略，某些 PyTorch 操作（尤其是传递给 SDPA 的注意力掩码）可能因步幅不连续而产生错误结果或性能下降。
+
+### 陷阱 4：sample_count 扩展后的 reshape 顺序
+
+多采样并行通过 `x.repeat(1, sample_count, 1, 1).reshape(-1, seq_len, feat)` 实现。这个特定的 reshape 顺序确保同一序列的不同采样在 batch 维度上是连续的（[seq0_sample0, seq0_sample1, ..., seq1_sample0, seq1_sample1, ...]）。如果误用 `reshape(sample_count, -1, seq_len, feat)`，batch 维度的排列将被打乱，导致后续 `z.reshape(-1, sample_count, ...)` 还原时对应关系错误。
+
+### 陷阱 5：bits_to_indices 的小端序 vs 大端序
+
+`BSQuantizer.bits_to_indices()` 使用 `2 ** torch.arange(0, bits, 1)`，即 `[1, 2, 4, 8, ...]`（小端序）。而 `BinarySphericalQuantizer.codes_to_indexes()` 使用 `2 ** torch.arange(embed_dim - 1, -1, -1)`，即 `[..., 8, 4, 2, 1]`（大端序）。两者的索引值不同但各自一致。在修改或扩展时，必须注意使用哪个函数，不能混用两套位序。
+
+### 陷阱 6：KronosPredictor 构造函数中的设备转移
+
+`KronosPredictor.__init__()` 会自动执行 `self.tokenizer = self.tokenizer.to(self.device)` 和 `self.model = self.model.to(self.device)`。如果在构造 `KronosPredictor` 之前已经手动将模型移到 GPU，构造函数会再次调用 `.to()`——虽然结果是正确的（模型已在目标设备上），但会产生不必要的设备转移开销。更严重的是，如果之后修改了 `self.model` 的引用但没有同步更新 `KronosPredictor` 持有的引用，推理仍会使用旧设备上的模型。
 
 ---
 

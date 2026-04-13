@@ -41,6 +41,13 @@ Kronos 提供四个规模的预测模型。**Kronos-mini 使用专用的 `Kronos
 | `s1_bits` / `s2_bits` | 10 / 10 | 10 / 10 | 10 / 10 | 10 / 10 |
 | **上下文长度** | **2048** | 512 | 512 | 512 |
 | **专用分词器** | **Kronos-Tokenizer-2k** | Kronos-Tokenizer-base | Kronos-Tokenizer-base | Kronos-Tokenizer-base |
+| `d_model` | — | 512 | — | — |
+| `n_layers` | — | 8 | — | — |
+| `n_heads` | — | 8 | — | — |
+| `ff_dim` | — | 1024 | — | — |
+| `learn_te` | — | true | — | — |
+
+> **注意**：上表中标注"—"的参数存储在各模型的 `config.json` 中，部分模型（mini、base、large）需要通过 HuggingFace Hub 认证后才能访问。加载模型后可通过 `model.config` 查看完整参数。已确认的 small 模型参数来自其公开的 `config.json`。
 
 **关键点**：
 
@@ -49,8 +56,19 @@ Kronos 提供四个规模的预测模型。**Kronos-mini 使用专用的 `Kronos
 - `d_model`（模型维度）是影响模型表达力的最关键参数——更大的 `d_model` 意味着更强的表示能力，但也需要更多训练数据
 - `n_layers` 影响模型捕捉长距离依赖的能力。层数越多，模型能"记住"越远的历史模式，但推理时间也近似线性增长
 - 推理时的显存占用主要由 `d_model`、`n_layers` 和 `seq_len` 决定
+- 从 small 到 base 的参数量增长约 4 倍（24.7M → 102.3M），主要来自 `d_model` 和 `n_layers` 的增大
 
-> 各模型的 `d_model`、`n_layers` 等内部参数存储在 HuggingFace Hub 上各模型的 `config.json` 中。加载模型后可通过 `model.config` 查看。
+### 参数量增长来源分析
+
+模型的参数量主要由以下部分贡献：
+
+| 组件 | 参数量公式 | 与 `d_model` 的关系 |
+|------|-----------|---------------------|
+| 令牌嵌入 | `2 × vocab × d_model` | 线性 |
+| Transformer 层 | `≈ 4 × d_model² × n_layers`（自注意力 + 前馈） | **二次方** |
+| 双头输出 | `(vocab_s1 + vocab_s2) × d_model` | 线性 |
+
+因此，`d_model` 的增大对参数量的影响远大于 `n_layers`。从 small（d_model=512）到 base（估计 d_model≈832），`d_model` 增长约 63%，但 Transformer 层的参数量增长约 165%（832²/512² ≈ 2.65 倍）。
 
 ---
 

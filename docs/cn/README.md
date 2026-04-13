@@ -123,5 +123,3 @@
 | 模型 Hub 路径 | `NeoQuasar/Kronos-{mini,small,base,large}` |
 | 回归测试 | `pytest tests/test_kronos_regression.py` |
 | Web UI 启动 | `python webui/run.py`（端口 7070） |
-- **源码可追溯**：行号引用标注具体文件和行号（如 `kronos.py:270`），方便对照源码理解
-- **术语一致**：跨文档使用统一的中文译法，首次出现时标注英文原文

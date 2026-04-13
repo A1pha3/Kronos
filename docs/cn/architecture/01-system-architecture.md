@@ -96,56 +96,72 @@
 │   └─ 输出: x_stamp (N, 5), y_stamp (pred_len, 5)
 │
 ├─ 3. 标准化
-│   └─ z-score: x = (x - mean) / (std + 1e-5)
-│   └─ clip: x = clip(x, -5, 5)
-│   └─ 升维: x → (1, N, 6)
+│   └─ z-score: x = (x - mean) / (std + 1e-5)    ← mean/std 形状 (6,)
+│   └─ clip: x = clip(x, -5, 5)                   ← 保持形状 (N, 6)
+│   └─ 升维: x → (1, N, 6)                         ← 添加 batch 维度
 │
 ├─ 4. 分词编码 [KronosTokenizer.encode()]
 │   ├─ embed: (1, N, 6) → (1, N, d_model)
-│   ├─ encoder: N-1 层 Transformer
+│   ├─ encoder: N-1 层 Transformer，每层 (1, N, d_model) → (1, N, d_model)
 │   ├─ quant_embed: (1, N, d_model) → (1, N, 20)
-│   ├─ BSQ: (1, N, 20) → z_q ∈ {-1, +1}^20
-│   └─ bits_to_indices: 切分并转换为 s1_ids (1, N) + s2_ids (1, N)
+│   ├─ L2 normalize: 沿最后一维归一化到单位球面
+│   ├─ BSQ: (1, N, 20) → z_q ∈ {-1, +1}^20，经缩放后范数为 1
+│   └─ bits_to_indices: 切分并转换为 s1_ids (1, N, vocab_s1) + s2_ids (1, N, vocab_s2)
+│
+│   注：若 BSQ 的所有维度恰好都量化到同一符号（极端情况下产生全零索引），
+│   模型仍可正常运行——全零索引（即索引 0）是合法的码本条目。
+│   这种情况表明编码器输出的向量所有维度都落在同一侧，熵正则化在训练中
+│   正是为了避免这种"塌缩"现象。
 │
 ├─ 5. 自回归推理 [auto_regressive_inference()]
-│   │  维护滑动缓冲区: pre_buffer (1, 512) + post_buffer (1, 512)
+│   │  维护滑动缓冲区: pre_buffer (B*sample_count, max_context)
+│   │                  + post_buffer (B*sample_count, max_context)
 │   │  注：Kronos-mini 使用 max_context=2048，其他型号默认 max_context=512
+│   │  注：缓冲区固定为 max_context 大小，不论输入多长，内存占用恒定——
+│   │      这是滑动窗口防止 OOM 的关键机制。即使 pred_len=10000，
+│   │      每步推理的注意力矩阵大小也只取决于 max_context。
 │   │
 │   ├─ for i in range(pred_len):
-│   │   ├─ model.decode_s1(buffer, stamp):
-│   │   │   ├─ HierarchicalEmbedding → s1_emb + s2_emb → fusion
-│   │   │   ├─ + TemporalEmbedding
-│   │   │   ├─ TransformerBlocks × N
-│   │   │   ├─ RMSNorm
-│   │   │   └─ DualHead.proj_s1 → s1_logits (1, 1, 1024)
-│   │   │   └─ 返回: s1_logits[:, -1, :], context
+│   │   ├─ model.decode_s1(buffer[:window_len], stamp):
+│   │   │   ├─ HierarchicalEmbedding → (B, W, d_model)
+│   │   │   ├─ + TemporalEmbedding → (B, W, d_model)
+│   │   │   ├─ TransformerBlocks × N → (B, W, d_model)
+│   │   │   ├─ RMSNorm → (B, W, d_model)
+│   │   │   └─ DualHead.proj_s1 → s1_logits (B, W, 1024)
+│   │   │   └─ 返回: s1_logits[:, -1, :] 形状 (B, 1024), context 形状 (B, W, d_model)
+│   │   │   注：W = min(initial_seq_len + i, max_context)
 │   │   │
-│   │   ├─ sample(s1_logits, T, top_k, top_p) → s1_id
+│   │   ├─ sample(s1_logits, T, top_k, top_p) → s1_id 形状 (B, 1)
 │   │   │
 │   │   ├─ model.decode_s2(context, s1_id):
-│   │   │   ├─ emb_s1(s1_id) → sibling_embed
+│   │   │   ├─ emb_s1(s1_id) → sibling_embed 形状 (B, 1, d_model)
 │   │   │   ├─ DependencyAwareLayer(context, sibling_embed)
-│   │   │   │   └─ CrossAttention(query=sibling, key=context, value=context)
-│   │   │   └─ DualHead.proj_s2 → s2_logits (1, 1, 1024)
+│   │   │   │   └─ CrossAttention(query=(B,1,d_model), key=context, value=context)
+│   │   │   │      → 输出形状 (B, W, d_model)
+│   │   │   └─ DualHead.proj_s2 → s2_logits (B, W, 1024)
+│   │   │   └─ 返回: s2_logits[:, -1, :] 形状 (B, 1024)
 │   │   │
-│   │   ├─ sample(s2_logits, T, top_k, top_p) → s2_id
+│   │   ├─ sample(s2_logits, T, top_k, top_p) → s2_id 形状 (B, 1)
 │   │   │
-│   │   └─ 更新缓冲区 (滑动窗口)
+│   │   └─ 更新缓冲区 (滑动窗口):
+│   │       若 current_seq_len < max_context → 末尾追加
+│   │       若 current_seq_len >= max_context → torch.roll 左移后末尾填入
 │   │
-│   └─ 输出: generated_pre (1, pred_len) + generated_post (1, pred_len)
+│   └─ 输出: generated_pre (B, pred_len) + generated_post (B, pred_len)
 │
 ├─ 6. 分词解码 [KronosTokenizer.decode()]
-│   ├─ indices_to_bits: (s1_ids, s2_ids) → 二值向量 (1, pred_len, 20)
-│   ├─ post_quant_embed: (1, pred_len, 20) → (1, pred_len, d_model)
-│   ├─ decoder: N-1 层 Transformer
-│   └─ head: (1, pred_len, d_model) → (1, pred_len, 6)  ← OHLCV
+│   ├─ indices_to_bits: (s1_ids, s2_ids) → 二值向量 (B*sample_count, W, 20)
+│   │  └─ 其中 W = min(initial_seq_len + pred_len, max_context) 的子窗口
+│   ├─ post_quant_embed: (B*sample_count, W, 20) → (B*sample_count, W, d_model)
+│   ├─ decoder: N-1 层 Transformer，每层保持 (B*sample_count, W, d_model)
+│   └─ head: (B*sample_count, W, d_model) → (B*sample_count, W, 6)  ← OHLCV
 │
 ├─ 7. 多采样聚合
-│   └─ reshape: (1, sample_count, pred_len, 6)
-│   └─ mean: 沿 sample_count 维度取平均
+│   └─ reshape: (B*sample_count, W, 6) → (B, sample_count, W, 6)
+│   └─ mean: 沿 sample_count 维度取平均 → (B, W, 6)
 │
 ├─ 8. 反标准化
-│   └─ x_original = x_pred * (std + 1e-5) + mean
+│   └─ x_original = x_pred * (std + 1e-5) + mean    ← 逐条序列使用各自的统计量
 │
 └─ 9. 输出: DataFrame (pred_len, 6)
 ```
@@ -175,6 +191,8 @@
 - 固定窗口大小使推理时间可预测
 
 **代价**：超过 512 步的长程依赖无法被模型捕捉。
+
+**内存管理细节**：滑动窗口不仅是精度与效率的权衡，更是 OOM 防护的关键机制。推理时 `pre_buffer` 和 `post_buffer` 固定分配为 `(batch_size * sample_count, max_context)` 大小，不论输入历史多长或预测步数多少，内存占用始终恒定。注意力的计算复杂度为 O(W^2)，其中 W = min(seq_len, max_context) 始终不超过 512（或 Kronos-mini 的 2048）。这意味着即使 `pred_len=10000`，每步推理的峰值内存也不会增长。唯一会线性增长的是 `generated_pre` 和 `generated_post`，它们的大小为 `(batch_size * sample_count, pred_len)`，但它们存储的是整数索引而非高维张量，开销很小。
 
 ### 3. s1 → s2 的顺序条件依赖
 
@@ -311,6 +329,8 @@ finetune_csv/  (CSV 微调)
 3. **实例级标准化是接口契约的一部分**：当前预测入口在内部统一执行均值、标准差与裁剪逻辑。如果你改预处理策略，需要同步评估预测入口、批量入口和示例脚本的一致性。
 4. **Hub 集成是模型类的基础能力**：`PyTorchModelHubMixin` 直接挂在模型类上，因此本地路径加载与 HuggingFace Hub 加载共享同一套接口。
 5. **分词器训练态与推理态路径不同**：`forward()`、`encode()`、`decode()` 各自承担不同职责。做源码扩展时，不能只验证训练路径而忽略推理路径。
+
+6. **KronosPredictor 不是 nn.Module**：`KronosPredictor` 是普通 Python 类（不继承 `nn.Module`），它通过持有 `self.model` 和 `self.tokenizer` 的引用来编排推理流程。这意味着它不会被 `model.state_dict()` 序列化，也不参与梯度计算。如果你需要自定义推理管线，可以直接实例化 `KronosPredictor` 并传入修改后的模型对象，而无需继承或修改它。同时注意 `KronosPredictor` 会在构造函数中自动将模型移至检测到的设备——如果你手动做了设备管理，需要留意这一点。
 
 ---
 
