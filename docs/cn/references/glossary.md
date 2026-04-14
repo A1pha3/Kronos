@@ -53,8 +53,12 @@
 | Top-k 采样 | Top-k Sampling | 只保留概率最高的 k 个候选令牌的采样策略 |
 | 贪婪解码 | Greedy Decoding | 始终选择概率最高的令牌，等价于 T→0 或 top_k=1 |
 | Teacher Forcing | Teacher Forcing | 训练时使用真实目标而非模型预测作为下一步输入的技术 |
+| 暴露偏差 | Exposure Bias | Teacher Forcing 的副作用：训练时模型看到的是真实标签，推理时只能看到自身的预测结果，两者分布不一致可能导致误差累积 |
 | 实例级标准化 | Instance-Level Normalization | 对每条预测序列独立计算均值和标准差的 z-score 标准化方法，是 KronosPredictor 的默认行为。详见"数据相关"分组 |
 | z-score 标准化 | Z-Score Normalization | (x - mean) / std，将数据变换为零均值单位方差 |
+| 码本塌缩 | Codebook Collapse | 量化器中大部分码字从未被使用的现象，模型只集中使用极少数码字，导致表达能力严重浪费。BSQ 通过熵正则化天然避免此问题 |
+| 置信区间 | Confidence Interval | 通过多次采样预测结果计算的概率区间（如 p5-p95），用于量化预测的不确定性 |
+| 蒙特卡洛采样 | Monte Carlo Sampling | 通过多次随机采样估计概率分布特征的方法。Kronos 中通过 `sample_count > 1` 实现多条独立预测路径 |
 
 ---
 
@@ -73,6 +77,8 @@
 | 残差连接 | Residual Connection | 将层的输出与输入相加（x + f(x)），缓解梯度消失 |
 | 因果掩码 | Causal Mask | 确保每个位置只能关注之前位置的注意力掩码 |
 | 填充掩码 | Padding Mask | 在批量处理中标记和忽略填充位置的掩码 |
+| half 模式 | Half Mode | BSQ 量化器 `half=True` 时的行为，将量化结果切分为前 s1_bits 维（s1 令牌）和后 s2_bits 维（s2 令牌），形成层级令牌体系 |
+| 滑动窗口缓冲区 | Sliding Window Buffer | 自回归推理中管理历史令牌的固定大小缓冲区，通过 `torch.roll` 滚动更新，确保每次推理只使用最近 `max_context` 个令牌 |
 
 ---
 
