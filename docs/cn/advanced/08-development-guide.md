@@ -60,7 +60,7 @@ Kronos/
 
 ### 当前实现
 
-`TemporalEmbedding`（`module.py:536-562`）从时间戳中提取 5 个特征：`minute`、`hour`、`weekday`、`day`、`month`。特征提取逻辑位于 `calc_time_stamps()` 函数（`kronos.py:472-479`）。
+`TemporalEmbedding`（定义于 `module.TemporalEmbedding`）从时间戳中提取 5 个特征：`minute`、`hour`、`weekday`、`day`、`month`。特征提取逻辑位于 `calc_time_stamps()` 函数（定义于 `kronos.calc_time_stamps`）。
 
 ### 扩展步骤：添加"季度"特征
 
@@ -176,7 +176,7 @@ class MyCustomDataset(Dataset):
 
 ### 当前实现
 
-`sample_from_logits()` 函数（`kronos.py:373-386`）支持温度采样、top-k 和 top-p 过滤。
+`sample_from_logits()` 函数（定义于 `kronos.sample_from_logits`）支持温度采样、top-k 和 top-p 过滤。
 
 ### 扩展：实现 min-p 采样
 
@@ -347,12 +347,22 @@ def test_custom_dataset():
 
 ---
 
-## 知识关联
+## 下一步
 
-- **前置**：[系统架构分析](../architecture/01-system-architecture.md) ⭐⭐⭐⭐ — 理解模块间依赖
-- **前置**：[源码走读](../architecture/04-source-code-walkthrough.md) ⭐⭐⭐⭐ — 逐模块理解代码
-- **相关**：[CSV 微调指南](02-finetune-csv.md) ⭐⭐⭐ — 自定义数据集的微调流程
-- **相关**：[模块修改影响矩阵](../architecture/01-system-architecture.md) — 评估修改影响
+| 推荐内容 | 难度 | 说明 |
+|---------|------|------|
+| [CSV 微调指南](02-finetune-csv.md) | ⭐⭐⭐ | 自定义数据集的微调流程 |
+| [Qlib 微调指南](01-finetune-qlib.md) | ⭐⭐⭐ | A 股专用微调流水线 |
+| [源码走读](../architecture/04-source-code-walkthrough.md) | ⭐⭐⭐⭐ | 深入理解实现细节 |
+
+## 相关文档
+
+| 文档 | 说明 |
+|------|------|
+| [系统架构分析](../architecture/01-system-architecture.md) | 理解模块间依赖与影响矩阵 |
+| [源码走读](../architecture/04-source-code-walkthrough.md) | 逐模块理解核心代码 |
+| [常见错误排查](../references/troubleshooting.md) | 调试技巧与错误排查方法 |
+| [模型对比与选型](07-model-comparison.md) | 不同模型规模的参数差异 |
 
 ---
 **文档元信息**

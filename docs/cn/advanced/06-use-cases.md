@@ -106,6 +106,7 @@ model = Kronos.from_pretrained("NeoQuasar/Kronos-small")
 # 如果使用 Kronos-mini，需要搭配 Kronos-Tokenizer-2k 分词器：
 # tokenizer = KronosTokenizer.from_pretrained("NeoQuasar/Kronos-Tokenizer-2k")
 # model = Kronos.from_pretrained("NeoQuasar/Kronos-mini")
+# predictor = KronosPredictor(model, tokenizer, max_context=2048)  # mini 使用 2048 上下文
 predictor = KronosPredictor(model, tokenizer, max_context=512)
 
 df = pd.read_csv("./examples/data/XSHG_5min_600977.csv")

@@ -462,7 +462,7 @@ print(prof.key_averages().table(sort_by="cpu_time_total", row_limit=10))
 import torch
 from model import KronosTokenizer
 
-tokenizer = KronosTokenizer.from_pretrained("NeoQuasar/KronosTokenizer-base")
+tokenizer = KronosTokenizer.from_pretrained("NeoQuasar/Kronos-Tokenizer-base")
 tokenizer.eval()
 
 # 构造输入

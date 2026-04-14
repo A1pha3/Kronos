@@ -95,6 +95,8 @@ qlib.init(provider_uri="~/.qlib/qlib_data/cn_data")
 | `accumulation_steps` | 1 | 梯度累积步数 |
 | `clip` | 5.0 | 数据裁剪范围 |
 
+> **数据量建议**：建议至少准备数千条 K 线数据用于微调。数据量不足时，验证损失会在前几个 epoch 后就开始回升（过拟合信号）。
+
 ### 模型路径配置
 
 ```python
@@ -188,6 +190,8 @@ torchrun --standalone --nproc_per_node=2 finetune/train_predictor.py
 ### 关键细节
 
 在预测模型微调中，分词器**不参与梯度计算**：
+
+为什么冻结分词器？微调预测模型时，分词器的令牌分布需要保持稳定。如果分词器同时更新，令牌空间的语义会发生漂移，导致预测模型学到的令牌映射失效——类似于改变了字典中单词的含义后再用旧知识阅读。冻结分词器确保预测模型在一个固定的令牌空间中优化。
 
 ```python
 with torch.no_grad():

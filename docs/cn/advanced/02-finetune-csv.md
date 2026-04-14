@@ -63,6 +63,8 @@ timestamps,open,high,low,close,volume,amount
 - 数据按时间升序排列
 - 不能有 NaN 值（如有，会自动前向填充）
 
+> **最低数据量要求**：CSV 文件至少应包含 `lookback_window + predict_window` 行数据。例如，默认配置（512 + 48 = 560 行）是单条样本的最低要求。建议至少准备数万行数据以获得稳定的微调效果。
+
 ### 数据划分
 
 数据按比例自动划分为训练集和验证集：
@@ -143,7 +145,7 @@ distributed:
 |--------|------|
 | `experiment.pre_trained` | 设为 `true` 使用预训练权重微调；设为 `false` 从随机初始化训练 |
 | `experiment.train_tokenizer` | 设为 `false` 可跳过分词器训练，直接训练预测模型 |
-| `experiment.skip_existing` | 设为 `true` 跳过已有模型，支持断点续训 |
+| `experiment.skip_existing` | 设为 `true` 跳过已存在的模型文件，避免重复训练。注意：这不是断点续训，而是从头开始或完全跳过 |
 | `model_paths.pretrained_tokenizer` | 可以是 HuggingFace Hub ID 或本地路径 |
 
 ---

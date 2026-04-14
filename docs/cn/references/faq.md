@@ -85,6 +85,14 @@ pred_df = predictor.predict(
 
 > **注意**：Kronos-mini 使用专用的 `Kronos-Tokenizer-2k` 分词器，其余模型共用 `Kronos-Tokenizer-base`。切换模型时请确保分词器匹配。详见 [模型对比与选型](../advanced/07-model-comparison.md)。
 
+### Q: top_k 和 top_p 有什么区别？应该在什么场景下使用？
+
+**top_k** 保留概率最高的 k 个令牌，适合需要确定性结果的场景（如 `top_k=1` 等价于贪婪解码）。**top_p**（核采样）保留累计概率达到 p 的令牌集合，适合需要多样性但排除极低概率选项的场景。推荐组合：日常使用 `top_k=0, top_p=0.9`（只用 top_p 过滤）；需要确定性时 `top_k=1`（贪婪解码）；探索性分析时 `top_k=0, top_p=0.95`。
+
+### Q: Kronos-large 什么时候开源？
+
+Kronos-large 目前未开源。仓库 README 中标注该模型仅用于学术研究。如需使用最大已开源模型，请选择 Kronos-base（102.3M 参数）。
+
 ### Q: 最大预测步数是多少？
 
 接口层面对 `pred_len` 没有硬编码上限，但步数越长，不确定性通常越高。建议：

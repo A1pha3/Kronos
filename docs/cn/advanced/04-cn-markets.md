@@ -112,6 +112,19 @@ y_timestamp = pd.bdate_range(
 
 > **注意**：`pd.bdate_range` 仅跳过周末，**不跳过中国法定节假日**。这意味着预测时间戳中可能包含春节、国庆等假期的日期。对于日线级别的长期预测，这种偏差通常可以接受；如需精确跳过节假日，可以使用中国交易日历库（如 `chinese_calendar`）进行过滤。
 
+如需跳过中国法定节假日，可使用 `chinese_calendar` 库：
+
+```bash
+pip install chinese_calendar
+```
+
+```python
+import chinese_calendar
+# 过滤掉节假日和周末
+future_dates = pd.bdate_range(start=..., periods=pred_len*2)  # 多生成一些再过滤
+future_dates = future_dates[~future_dates.map(lambda d: chinese_calendar.is_holiday(d.date()))][:pred_len]
+```
+
 ### 4. 执行预测
 
 ```python
@@ -243,6 +256,8 @@ pred_df = apply_price_limits(pred_df, last_close, limit_rate=0.20)  # 创业板
 ### Q: 预测 120 步是否太多？
 
 **A**: 预测步数越长，不确定性越大。对于日线数据，建议将 `PRED_LEN` 设置为 20-60 个交易日。120 个交易日（约半年）的预测仅供参考。
+
+> **为什么脚本默认使用 120 步？** 日线数据的每一步噪声比分钟线数据低（日 K 线聚合了一整天的交易信息，信噪比更高），因此在一定程度上支持更长的预测视野。然而，这并不意味着 120 步预测具有与 20 步预测同等的可靠性。用户应将超过 60 步的结果视为趋势性参考，而非精确预测。
 
 ---
 
