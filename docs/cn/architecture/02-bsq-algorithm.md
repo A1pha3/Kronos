@@ -419,5 +419,14 @@ with torch.no_grad():
 
 ---
 
+## 相关文档
+
+- **前置**：[KronosTokenizer 详解](../core-concepts/02-tokenizer.md) — 理解 BSQ 在分词器中的使用方式
+- **相关**：[层级令牌体系](../core-concepts/05-hierarchical-tokens.md) — s1/s2 如何从 BSQ 量化结果中切分
+- **相关**：[系统架构分析](01-system-architecture.md) — 理解 BSQ 在整体数据流中的位置
+- **进阶**：[源码走读](04-source-code-walkthrough.md) — BSQ 量化的逐行源码解读
+
+---
+
 **文档元信息**
 难度：⭐⭐⭐⭐ | 类型：专家设计 | 预计阅读时间：30 分钟 | 更新日期：2026-04-11
