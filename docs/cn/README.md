@@ -123,3 +123,5 @@
 | 模型 Hub 路径 | `NeoQuasar/Kronos-{mini,small,base,large}` |
 | 回归测试 | `pytest tests/test_kronos_regression.py` |
 | Web UI 启动 | `python webui/run.py`（端口 7070） |
+| 设备自动检测 | CUDA → MPS → CPU（无需手动配置） |
+| 时间特征 | minute, hour, weekday, day, month（5 个特征） |

@@ -335,6 +335,46 @@ print(pred_df.head())
 
 **A**: OOM 通常由以下原因导致：（1）`lookback` 过大——尝试降低到 200 或更小；（2）`sample_count` 过大——先从 1 开始测试；（3）`pred_len` 过长——缩短预测步数。如果使用 GPU，可以在 `KronosPredictor` 中显式指定 `device="cpu"` 来避免显存不足。
 
+### Q: 如何卸载或清理模型缓存？
+
+**A**: Kronos 通过 HuggingFace Hub 加载模型，下载的权重文件会缓存在本地。默认缓存位置取决于操作系统：
+
+| 操作系统 | 缓存路径 |
+|----------|----------|
+| macOS / Linux | `~/.cache/huggingface/hub/` |
+| Windows | `C:\Users\<用户名>\.cache\huggingface\hub\` |
+
+**查看缓存占用**：
+
+```bash
+# macOS / Linux
+du -sh ~/.cache/huggingface/hub/
+```
+
+**清理特定模型**：
+
+```bash
+# 删除 Kronos 相关缓存（模型名以 NeoQuasar 开头）
+rm -rf ~/.cache/huggingface/hub/models--NeoQuasar--Kronos-small
+rm -rf ~/.cache/huggingface/hub/models--NeoQuasar--Kronos-Tokenizer-base
+```
+
+**清理全部 HuggingFace 缓存**：
+
+```bash
+# 谨慎操作：这会删除所有通过 HuggingFace Hub 下载的模型
+rm -rf ~/.cache/huggingface/hub/
+```
+
+**自定义缓存位置**：如果磁盘空间紧张，可以通过环境变量将缓存指向其他路径：
+
+```bash
+export HF_HOME=/data/huggingface_cache    # 设置 HuggingFace 根目录
+export HF_HUB_CACHE=/data/hf_hub_cache    # 单独设置 Hub 缓存目录
+```
+
+清理后首次运行 `from_pretrained()` 会重新下载模型权重。
+
 ---
 
 ## ✅ 自测清单

@@ -428,6 +428,119 @@ preds = preds[:, -pred_len:, :]  # 只返回预测部分，不包含已解码的
 
 ---
 
+## 常见问题
+
+### Q: predict() 和 predict_batch() 应该选择哪个？
+
+**A**: 取决于你的数据特点：
+
+| 场景 | 推荐方法 | 原因 |
+|------|----------|------|
+| 单条时间序列预测 | `predict()` | 最简单直接，无需构造列表 |
+| 多条等长序列并行预测 | `predict_batch()` | 利用 GPU 并行能力，比循环调用 `predict()` 更高效 |
+| 多条不等长序列 | 循环调用 `predict()` | `predict_batch()` 要求所有 DataFrame 行数一致（源码通过 `len(set(seq_lens)) != 1` 检查），不等长时会抛出 `ValueError` |
+
+**注意**：`predict_batch()` 的实际 batch 大小为 `序列数 × sample_count`，显存占用会相应放大。如果序列数量较多且 `sample_count > 1`，建议先小批量测试显存是否够用。
+
+### Q: 为什么 sample_count > 1 时结果是平均而非中位数？
+
+**A**: 从源码实现来看（`kronos.py:465-467`），最终聚合使用的是 `np.mean(preds, axis=1)`，即沿采样维度取算术平均。选择均值而非中位数的原因包括：
+
+1. **实现简洁**：`np.mean` 是最直接的聚合方式，无需额外处理
+2. **统计性质**：对于单峰分布，样本均值是最小方差无偏估计（MVUE），在数学上是效率最高的点估计
+3. **与训练目标一致**：模型训练时的损失函数（如 MSE）隐式地优化均值预测，因此推理时取均值与训练目标对齐
+
+**何时考虑中位数**：如果你的预测路径呈现多峰分布（可以通过观察各条路径的标准差来检测），均值可能落入"无意义"的中间区域。此时中位数对异常路径更鲁棒，但需要你手动保留各条采样路径并计算：
+
+```python
+# 手动获取多条路径的中位数（而非均值）
+paths = []
+for _ in range(10):
+    pred = predictor.predict(df=x_df, x_timestamp=x_timestamp,
+                            y_timestamp=y_timestamp, pred_len=60,
+                            T=1.0, top_p=0.9, sample_count=1, verbose=False)
+    paths.append(pred[['open', 'high', 'low', 'close']].values)
+
+import numpy as np
+paths_array = np.array(paths)  # 形状: (10, 60, 4)
+median_pred = np.median(paths_array, axis=0)  # 沿采样维度取中位数
+```
+
+### Q: 如何在预测中固定随机种子以获得可复现结果？
+
+**A**: 需要同时固定 PyTorch 和 NumPy 的随机种子。由于 Kronos 的采样过程同时涉及 PyTorch 张量操作（`sample_from_logits`）和 NumPy 数值计算（标准化、反标准化），两边的种子都需要设置：
+
+```python
+import torch
+import numpy as np
+
+# 固定随机种子
+torch.manual_seed(42)
+np.random.seed(42)
+
+# 如果使用 GPU，还需设置 CUDA 随机种子
+if torch.cuda.is_available():
+    torch.cuda.manual_seed(42)
+    torch.cuda.manual_seed_all(42)
+
+# 现在执行预测，结果可复现
+pred_df = predictor.predict(
+    df=x_df, x_timestamp=x_timestamp, y_timestamp=y_timestamp,
+    pred_len=60, T=1.0, top_p=0.9, sample_count=1, verbose=False
+)
+
+# 再次设置相同种子并预测，结果应完全一致
+torch.manual_seed(42)
+np.random.seed(42)
+pred_df_2 = predictor.predict(
+    df=x_df, x_timestamp=x_timestamp, y_timestamp=y_timestamp,
+    pred_len=60, T=1.0, top_p=0.9, sample_count=1, verbose=False
+)
+
+print(np.allclose(pred_df.values, pred_df_2.values))  # 应输出 True
+```
+
+**注意**：`sample_count > 1` 时每次采样的随机状态不同，但只要种子相同，整体平均结果仍然可复现。另外，`torch.backends.cudnn.deterministic = True` 可以进一步确保 CUDA 操作的确定性，但会降低性能。
+
+### Q: 预测完成后如何持久化结果？
+
+**A**: `predict()` 返回的 `pred_df` 是一个标准的 pandas DataFrame，可以使用 pandas 提供的所有序列化方法保存和加载：
+
+**保存为 CSV**：
+
+```python
+# 保存（索引即 y_timestamp 会被保留）
+pred_df.to_csv("prediction_result.csv")
+
+# 重新加载
+import pandas as pd
+loaded_df = pd.read_csv("prediction_result.csv", index_col=0, parse_dates=True)
+print(loaded_df.head())
+```
+
+**保存为 JSON**：
+
+```python
+# 保存为 JSON（orient="records" 适合后续程序处理）
+pred_df.to_json("prediction_result.json", orient="records", date_format="iso", indent=2)
+
+# 重新加载
+loaded_df = pd.read_json("prediction_result.json", orient="records")
+print(loaded_df.head())
+```
+
+**格式选择建议**：
+
+| 格式 | 优点 | 缺点 | 适用场景 |
+|------|------|------|----------|
+| CSV | 通用性强，Excel 可直接打开 | 数据类型可能丢失（如时间戳精度） | 分享给他人、快速查看 |
+| JSON | 保留数据类型，结构化好 | 文件体积较大 | 程序间传递、Web API |
+| Parquet | 压缩率高，读写快 | 需要 `pyarrow` 或 `fastparquet` | 大批量结果存储 |
+
+**提示**：如果需要保存多条预测路径（`sample_count > 1` 时的各条独立路径），当前 `predict()` 只返回均值。如需保留各条路径，请参考上方"中位数"示例中的手动采样方法，将 `paths` 列表保存即可。
+
+---
+
 ## 练习与实践
 
 ### 尝试不同 sample_count，观察预测结果的标准差变化

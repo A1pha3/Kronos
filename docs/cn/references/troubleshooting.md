@@ -21,6 +21,7 @@
 | `Error(s) in loading state_dict` | 权重与代码不匹配 | [权重加载](#runtimeerror-errors-in-loading-state_dict) |
 | `NCCL error` | DDP 通信失败 | [NCCL 错误](#runtimeerror-nccl-error) |
 | `WORLD_SIZE` 未设置 | 未使用 torchrun | [torchrun 错误](#world_size-环境变量未设置) |
+| `MPS does not support` | Apple Silicon MPS 后端限制 | [MPS 错误](#mpsapple-silicon相关问题) |
 | 训练损失不下降 | 超参数或数据问题 | [训练不收敛](#训练损失不下降) |
 | 预测为直线 | 参数或数据问题 | [预测结果为一条直线](#预测结果为一条直线) |
 
@@ -36,6 +37,7 @@
 | 模型加载失败 | 首次使用、网络问题 | [模型加载错误](#模型加载错误) |
 | 训练不收敛 | 微调过程 | [训练类错误](#训练类错误) |
 | 预测结果异常 | 参数设置、数据质量 | [预测结果类问题](#预测结果类问题) |
+| MPS 不支持 | Apple Silicon Mac | [MPS 相关问题](#mpsapple-silicon相关问题) |
 
 ---
 
@@ -411,6 +413,40 @@ def fix_ohlc_logic(pred_df):
 
 pred_df = fix_ohlc_logic(pred_df)
 ```
+
+---
+
+## MPS（Apple Silicon）相关问题
+
+### RuntimeError: MPS does not support ...
+
+**触发场景**：在 Apple Silicon Mac（M1/M2/M3/M4）上使用 MPS 后端时，某些 PyTorch 操作尚未被 MPS 支持。
+
+**排查步骤**：
+
+```python
+# 检查 MPS 是否可用
+import torch
+print(f"MPS 可用: {torch.backends.mps.is_available()}")
+print(f"MPS 已构建: {torch.backends.mps.is_built()}")
+```
+
+**常见解决方案**：
+
+```python
+# 方案 1：回退到 CPU
+predictor = KronosPredictor(model, tokenizer, device="cpu")
+
+# 方案 2：设置环境变量回退到 CPU
+import os
+os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
+```
+
+**注意**：MPS 后端在较新版本的 PyTorch（≥ 2.1）中支持更完善。如果频繁遇到 MPS 不支持的错误，建议升级 PyTorch 到最新版本。
+
+### MPS 设备上的精度问题
+
+MPS 后端在某些操作上可能产生与 CPU/CUDA 略有差异的结果（通常在 1e-6 量级）。这不影响预测质量，但如果需要严格一致性，使用 CPU。
 
 ---
 

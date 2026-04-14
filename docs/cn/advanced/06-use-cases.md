@@ -330,6 +330,69 @@ evaluate_prediction(x_df, pred_df)
 
 ---
 
+## 场景 8：模型集成
+
+Kronos 提供了多个不同规模的预训练模型（mini、small、base、large）。一个自然的思路是：能否组合多个模型的预测结果以获得更稳健的结论？
+
+### 基本方法：多模型平均
+
+```python
+from model import Kronos, KronosTokenizer, KronosPredictor
+import numpy as np
+
+# 加载两个不同规模的模型
+tokenizer = KronosTokenizer.from_pretrained("NeoQuasar/Kronos-Tokenizer-base")
+
+model_small = Kronos.from_pretrained("NeoQuasar/Kronos-small")
+predictor_small = KronosPredictor(model_small, tokenizer, max_context=512)
+
+model_base = Kronos.from_pretrained("NeoQuasar/Kronos-base")
+predictor_base = KronosPredictor(model_base, tokenizer, max_context=512)
+
+# 分别预测
+pred_small = predictor_small.predict(
+    df=x_df, x_timestamp=x_timestamp, y_timestamp=y_timestamp,
+    pred_len=60, T=1.0, sample_count=3
+)
+pred_base = predictor_base.predict(
+    df=x_df, x_timestamp=x_timestamp, y_timestamp=y_timestamp,
+    pred_len=60, T=1.0, sample_count=3
+)
+
+# 取两个模型预测的平均值
+ensemble_close = (pred_small['close'].values + pred_base['close'].values) / 2
+
+# 检查两个模型的方向是否一致
+small_direction = np.sign(pred_small['close'].iloc[-1] - pred_small['close'].iloc[0])
+base_direction = np.sign(pred_base['close'].iloc[-1] - pred_base['close'].iloc[0])
+
+if small_direction == base_direction:
+    print(f"两个模型方向一致（{'看涨' if small_direction > 0 else '看跌'}），信号可信度更高")
+else:
+    print("两个模型方向分歧，建议谨慎对待此次预测")
+```
+
+### 何时有效
+
+| 条件 | 说明 |
+|------|------|
+| 模型规模差异明显 | small 和 base 的参数量和训练容量不同，学到的模式侧重点有差异，集成时互补性更强 |
+| 方向一致性高 | 如果多个模型独立预测出的趋势方向一致，说明该方向的信号在历史模式中较为稳健 |
+| 数据与预训练分布接近 | 对于主流市场（A 股、美股日线等）的常见品种，不同模型的预训练知识都能覆盖 |
+
+### 何时无效
+
+| 情况 | 原因 |
+|------|------|
+| 同一模型多次采样 | 这是"多次采样"而非"模型集成"。同一个模型生成的多条路径高度相关，不提供独立视角 |
+| 模型方向严重分歧 | 如果 small 看涨而 base 看跌，简单平均会抵消信号，不如分别分析各自的置信度 |
+| 数据分布与预训练差距大 | 对于微调后的自定义模型与预训练模型做集成，两者学到的分布不同，平均结果可能 worse than either |
+| mini 与其他模型集成 | mini 使用 2048 上下文和不同的分词器（Tokenizer-2k），其 token 粒度与其他模型不同，直接平均预测值在语义上不对齐 |
+
+> **关键认知**：模型集成的前提是各个模型具有"独立的误差来源"。不同规模的 Kronos 模型共享相同的预训练数据，只是容量不同，因此集成的增益有限——不如增加单模型的采样次数来得经济。如果追求真正的多样性，建议结合 Kronos 预测与传统技术指标（如均线、MACD）进行多源信号集成。
+
+---
+
 ## 结果使用建议
 
 ### 正确使用方式
@@ -376,6 +439,24 @@ Kronos 预测结果
 ```
 
 **关键原则**：Kronos 提供的是"如果历史模式延续，未来可能如何"的概率性参考。实际交易决策还需要考虑风险偏好、仓位管理、止损策略等综合因素。
+
+### 如何设置合理的预期
+
+在使用 Kronos 之前，建立正确的预期至关重要，可以避免对模型产生不切实际的期望：
+
+1. **Kronos 不是"水晶球"**：模型学到的本质是历史 K 线模式的统计规律。当未来走势与历史模式相似时，预测有参考价值；当市场出现前所未有的情况时，预测可能完全失效。
+
+2. **"方向比数值重要"**：不要期望模型精确预测"明天收盘价是 105.32 元"。合理的期望是：模型能在统计意义上给出未来一段时间内涨跌方向的倾向性判断，准确率略高于随机（如 55%-65%），而非确定性的方向预测。
+
+3. **短期比长期可靠**：前 10-20 步的预测通常比 60-120 步的预测更有参考价值。可以将长程预测视为"趋势的大致走向参考"，而非具体的价格路径。
+
+4. **单次预测无统计意义**：一次预测的结果可能是运气使然。需要在一个合理的时间窗口内（如 30 次以上独立预测）评估模型的总体表现，才能判断其是否对你关注的标的有参考价值。
+
+5. **模型无法替代风险管理**：即使预测方向正确，幅度和时间点也可能偏离。止损策略、仓位控制、分散投资等风险管理原则不应因模型预测而被忽视。
+
+---
+
+## 自测清单
 
 ---
 
