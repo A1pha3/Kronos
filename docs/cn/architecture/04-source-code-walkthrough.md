@@ -467,7 +467,7 @@ def __init__(self, model, tokenizer, device=None, max_context=512, clip=5.0):
     self.device = device or self._detect_device()
     self.price_cols = ['open', 'high', 'low', 'close']
     self.vol_col = 'volume'
-    self.amt_col = 'amount'
+    self.amt_vol = 'amount'
 ```
 
 **generate() 方法** `kronos.py:508-517`：
