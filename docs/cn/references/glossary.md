@@ -103,9 +103,6 @@
 | 预测窗口 | Prediction Window | 模型预测的未来数据长度 |
 | 最大上下文 | Max Context | 模型能处理的最大令牌序列长度。Kronos-small/base/large 默认 512，Kronos-mini 为 2048。超过此长度的历史令牌被丢弃 |
 | 裁剪 | Clip | 将标准化后的值限制在 `[-clip, clip]` 范围内（默认 clip=5），抑制极端异常值的影响 |
-| Qlib | Qlib | 微软开源的量化投资平台，提供中国 A 股数据接口 |
-| HuggingFace Hub | HuggingFace Hub | 模型和数据集的托管平台，Kronos 的预训练模型存储于此 |
-| Safetensors | Safetensors | 一种安全的模型权重文件格式，避免了 pickle 的安全风险 |
 | 涨跌停 | Price Limit | A 股市场中单日价格涨跌幅不超过特定比例的限制。主板 ±10%，创业板/科创板 ±20%，ST 股 ±5%，北交所 ±30% |
 | 复权 | Adjusted Price | 对历史价格进行分红、送股等因素的调整，使价格序列连续可比。Kronos 不要求复权数据 |
 | 停牌 | Trading Suspension | 股票暂停交易的状态，数据中可能记录为开盘价为 0 或 NaN，需要在预测前处理 |

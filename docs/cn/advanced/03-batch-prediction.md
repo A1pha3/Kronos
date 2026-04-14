@@ -142,7 +142,7 @@ x = x.reshape(-1, x.size(1), x.size(2))  # (B*sample_count, seq_len, features)
 显存占用 ≈ 实际 batch × seq_len × d_model × n_layers × 4 字节 × 4（前向+反向+激活+中间）
 ```
 
-以 `Kronos-small`（d_model=512, n_layers=12）为例：
+以 `Kronos-small`（d_model=512, n_layers=8）为例：
 
 | 配置 | 实际 batch | 预估显存 |
 |------|-----------|---------|

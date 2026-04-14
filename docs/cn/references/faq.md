@@ -296,8 +296,10 @@ python webui/run.py
 修改 `webui/run.py` 中的端口号：
 
 ```python
-app.run(debug=True, host='0.0.0.0', port=8080)  # 改为 8080
+app.run(host='0.0.0.0', port=8080)  # 改为 8080
 ```
+
+> **注意**：`debug=True` 仅用于本地开发调试，不应在生产或局域网共享场景中使用。详见 [Web UI 使用指南](../advanced/05-webui-guide.md)。
 
 ---
 
