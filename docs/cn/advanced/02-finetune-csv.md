@@ -148,6 +148,23 @@ distributed:
 | `experiment.skip_existing` | 设为 `true` 跳过已存在的模型文件，避免重复训练。注意：这不是断点续训，而是从头开始或完全跳过 |
 | `model_paths.pretrained_tokenizer` | 可以是 HuggingFace Hub ID 或本地路径 |
 
+> **`pre_trained` 的细粒度控制**：YAML 中的 `experiment.pre_trained` 是统一开关，同时控制分词器和预测模型是否加载预训练权重。如果需要独立控制（如分词器从零训练但预测模型使用预训练权重），可以在 YAML 中分别设置 `experiment.pre_trained_tokenizer: false` 和 `experiment.pre_trained_predictor: true`。当这两个细粒度标志存在时，它们会覆盖 `pre_trained` 的值。此行为由当前 `ConfigLoader` 实现（`finetune_csv/config_loader.py`）提供支持，如果你的代码版本较旧，请确认该文件中包含对 `pre_trained_tokenizer` / `pre_trained_predictor` 的解析逻辑。
+
+### 配置文件的路径解析机制
+
+`ConfigLoader`（`finetune_csv/config_loader.py`）在加载 YAML 后会自动解析动态路径：
+
+```
+model_paths:
+  exp_name: "my_experiment"
+  base_path: "./outputs"
+  # 以下路径会自动生成（如果留空）：
+  # base_save_path: "./outputs/my_experiment"
+  # finetuned_tokenizer: "./outputs/my_experiment/tokenizer/best_model"
+```
+
+`_resolve_dynamic_paths()` 方法基于 `exp_name` 和 `base_path` 自动拼接输出目录。如果某个路径值包含 `{exp_name}` 占位符，会被替换为实际的实验名。这确保了预测模型微调阶段能自动找到分词器微调阶段的输出——无需手动指定 `finetuned_tokenizer` 路径。
+
 ---
 
 ## 启动训练
@@ -231,8 +248,8 @@ outputs/my_experiment/logs/
 dataset = CustomKlineDataset(
     data_path="./data/my_kline.csv",
     data_type="train",          # "train" / "val" / "test"
-    lookback_window=512,
-    predict_window=48,
+    lookback_window=90,         # 代码默认值；YAML 配置中的值会覆盖此默认值
+    predict_window=10,          # 代码默认值；YAML 配置中的值会覆盖此默认值
     clip=5.0,
     seed=100,
     train_ratio=0.9,
@@ -240,9 +257,11 @@ dataset = CustomKlineDataset(
 )
 ```
 
+> **注意**：`CustomKlineDataset` 的代码默认值为 `lookback_window=90, predict_window=10`，但实际训练时 `SequentialTrainer` 会从 YAML 配置文件中读取值并传入，覆盖代码默认值。上文中 YAML 示例配置的是 `512` / `48`。
+
 ### 数据采样策略
 
-- **训练集**：使用确定性伪随机采样（基于 epoch seed），确保不同 epoch 的数据分布不同
+- **训练集**：使用确定性伪随机采样（基于 epoch seed），不同 epoch 通过 `(idx * 9973 + (epoch + 1) * 104729) % (max_start + 1)` 计算起始位置，确保每个 epoch 看到不同的样本顺序和位置
 - **验证集**：顺序采样，确保验证结果可复现
 
 ---
@@ -403,7 +422,3 @@ python finetune_csv/train_sequential.py --config config.yaml
 - **进阶**：[源码走读](../architecture/04-source-code-walkthrough.md) — 深入训练代码细节
 - **实战**：[使用场景与实战案例](06-use-cases.md) — 微调后的应用示例
 
----
-**文档元信息**
-难度：⭐⭐⭐ | 类型：进阶指南 | 预计阅读时间：20 分钟
-更新日期：2026-04-11

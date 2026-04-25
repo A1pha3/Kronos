@@ -51,7 +51,7 @@ Kronos/
 | 修改 `s1_bits` / `s2_bits` | — | — | ✅ 必须 |
 | 修改 `d_model` / `n_layers` 等结构参数 | — | — | ✅ 必须 |
 | 添加新的时间特征 | — | — | ✅ 必须（嵌入表不兼容） |
-| 替换 RMSNorm 为 LayerNorm | — | ⚠️ 需验证训练收敛 | 取决于是否加载预训练权重 |
+| 替换 RMSNorm 为 LayerNorm | — | ⚠️ 需验证训练收敛 | ⚠️ 从零训练可行；加载预训练权重时高风险（权重结构不兼容） |
 | 替换 RoPE 为其他位置编码 | — | ⚠️ 需验证长序列效果 | 取决于是否加载预训练权重 |
 
 ---
@@ -83,7 +83,7 @@ def calc_time_stamps(x_timestamp):
 
 ```python
 # model/module.py — TemporalEmbedding.__init__()
-quarter_size = 5    # 季度：1-4
+quarter_size = 4    # 季度：1-4
 self.quarter_embed = Embed(quarter_size, d_model)
 
 # model/module.py — TemporalEmbedding.forward()
@@ -178,7 +178,7 @@ class MyCustomDataset(Dataset):
 
 `sample_from_logits()` 函数（定义于 `kronos.sample_from_logits`）支持温度采样、top-k 和 top-p 过滤。
 
-### 扩展：实现 min-p 采样
+### 扩展：实现 min-p 采样（示例扩展，非现有代码）
 
 ```python
 def sample_from_logits(logits, temperature=1.0, top_k=None, top_p=None,
@@ -209,12 +209,14 @@ def sample_from_logits(logits, temperature=1.0, top_k=None, top_p=None,
 
 **影响范围**：
 
-| 需要同步修改 | 文件 |
-|-------------|------|
-| `sample_from_logits` | `kronos.py` |
-| `auto_regressive_inference` 的参数签名 | `kronos.py` |
-| `KronosPredictor.predict` 的参数签名 | `kronos.py` |
-| `KronosPredictor.predict_batch` 的参数签名 | `kronos.py` |
+| 需要同步修改 | 文件 | 说明 |
+|-------------|------|------|
+| `sample_from_logits` | `kronos.py` | 添加 `min_p` 参数和过滤逻辑 |
+| `auto_regressive_inference` | `kronos.py` | 透传 `min_p` 参数 |
+| `KronosPredictor.predict` | `kronos.py` | 暴露 `min_p` 参数给调用方 |
+| `KronosPredictor.predict_batch` | `kronos.py` | 同上 |
+
+> **注意**：`KronosPredictor.predict` 和 `predict_batch` 的现有签名中都包含 `top_k` 参数（默认值为 `0`，即不过滤）。如果添加 `min_p`，建议将参数放在 `top_p` 之后，保持与现有参数风格一致。
 
 ---
 
@@ -237,6 +239,8 @@ model = Kronos(
 ```
 
 **影响**：参数量近似翻倍，推理时间近似翻倍，显存占用增加。
+
+> **注意**：KronosTokenizer 的 encoder/decoder 层数存在"减一"行为——内部使用 `range(enc_layers - 1)` 构建 ModuleList，因此实际层数为参数值减 1。例如 `n_enc_layers=4` 只会创建 3 个 TransformerBlock。修改层数时请留意这一差异。
 
 **层数与性能的关系**：Transformer 层数决定模型能捕捉的"抽象层级"。每一层可以学习一种不同层次的模式——浅层捕捉局部波动特征（如单根 K 线的形态），深层捕捉全局趋势特征（如多根 K 线的周期性规律）。增加到 24 层意味着模型有更多层级来构建抽象表示，但也更容易过拟合（特别是在数据量有限时）。经验上，当训练数据量超过百万条 K 线时，更深层数的收益才开始明显体现。
 
@@ -262,7 +266,50 @@ class TransformerBlock(nn.Module):
         self.norm2 = nn.LayerNorm(d_model)
 ```
 
-**风险等级**：低。LayerNorm 和 RMSNorm 功能等价，但需验证训练收敛性。
+**风险等级**：从零训练时为低风险（LayerNorm 和 RMSNorm 功能等价，但需验证训练收敛性）；加载预训练权重时为**高风险**——两者的权重结构不兼容（RMSNorm 仅含 `weight`，LayerNorm 同时含 `weight` 和 `bias`），`load_state_dict()` 会因键名/形状不匹配而失败。
+
+---
+
+## 常见开发错误
+
+### 错误 1：修改模型结构后加载预训练权重失败
+
+**症状**：`RuntimeError: Error(s) in loading state_dict for Kronos: ... size mismatch ...`
+
+**原因**：修改了 `d_model`、`n_layers`、`s1_bits` 等结构参数后，预训练权重的张量形状与新模型不匹配。
+
+**解决方法**：
+
+```python
+# 方法 1：从零开始训练（不加载预训练权重）
+model = Kronos(...)
+# 不要调用 from_pretrained()，直接使用随机初始化的权重
+
+# 方法 2：仅加载兼容的部分权重
+pretrained = Kronos.from_pretrained("NeoQuasar/Kronos-base")
+model = Kronos(...)  # 新结构
+model.load_state_dict(pretrained.state_dict(), strict=False)
+# strict=False 会跳过形状不匹配的层，打印警告信息
+```
+
+### 错误 2：top_k 与 top_p 参数混淆
+
+**症状**：采样结果异常——所有输出相同或完全随机。
+
+**原因**：`sample_from_logits` 中 `top_k=0` 表示**不过滤**（保留所有令牌），而 `top_p=0.9` 表示核采样。两者是独立的过滤条件，不是"top-k 等于 0 就不采样"。
+
+```python
+# 正确用法
+result = sample_from_logits(logits, top_k=50, top_p=0.9)   # top-k + top-p 联合过滤
+result = sample_from_logits(logits, top_k=0, top_p=0.9)    # 仅 top-p（默认行为）
+result = sample_from_logits(logits, top_k=50, top_p=1.0)   # 仅 top-k
+```
+
+### 错误 3：修改时间特征后忘记更新 predict 流程
+
+**症状**：`IndexError: index 5 is out of bounds` 或预测结果维度不匹配。
+
+**原因**：添加了新的时间特征（如"季度"），但 `KronosPredictor.time_cols` 仍为旧列表，导致 `calc_time_stamps()` 返回的列数与模型期望的不一致。需要同步更新三处：`calc_time_stamps`、`TemporalEmbedding`、`KronosPredictor.time_cols`（参见扩展点 1）。
 
 ---
 
@@ -334,6 +381,75 @@ def test_custom_dataset():
 - [ ] 未破坏 `from model import Kronos, KronosTokenizer, KronosPredictor` 的导入路径
 - [ ] 修改涉及参数变更时，确保默认值保持向后兼容
 - [ ] 未引入新的硬编码依赖
+- [ ] 如果修改了模型结构参数，确认不会影响预训练权重加载（或已使用 `strict=False`）
+
+> **深入理解**：修改的安全性评估可参考 [系统架构分析](../architecture/01-system-architecture.md) 中的"组件替换风险评估表"，该表列出了各类修改的潜在影响和回滚策略。
+
+---
+
+## 动手练习
+
+### 练习 1：添加"季度"时间特征
+
+在 `model/module.py` 中找到 `TemporalEmbedding`，按照本文"扩展点 1：添加自定义时间特征"的步骤，增加一个 `quarter_embed`（季度，取值 1-4）。修改后用以下代码验证：
+
+```python
+import torch
+from model.module import TemporalEmbedding
+
+# 创建带季度的时间嵌入（假设已修改）
+te = TemporalEmbedding(d_model=256, learn_pe=True)
+te.eval()
+
+# 构造输入：6 列时间特征（原 5 列 + 季度）
+stamp = torch.tensor([[[30, 14, 1, 15, 6, 2]]])  # minute=30, hour=14, weekday=1, day=15, month=6, quarter=2
+with torch.no_grad():
+    emb = te(stamp)
+print(f"嵌入形状: {emb.shape}")  # 应为 (1, 1, 256)
+```
+
+**验证方法**：
+1. 确认 `calc_time_stamps()` 输出从 5 列变为 6 列
+2. 确认 `TemporalEmbedding` 中新增了 `quarter_embed` 属性
+3. 确认 `predict()` 能正常调用且不报错
+4. 运行回归测试 `pytest tests/test_kronos_regression.py` 确认无破坏
+
+**注意**：此修改需要同步更新 `model/kronos.py` 中 `calc_time_stamps()` 函数和所有数据集类的时间特征列数。
+
+### 练习 2：实现一个带数据增强的自定义数据集
+
+基于本文"扩展点 2"的模板，创建一个在 `__getitem__` 中对输入数据添加微小高斯噪声的数据增强 Dataset：
+
+```python
+import torch
+from torch.utils.data import Dataset
+import pandas as pd
+import numpy as np
+
+class AugmentedKlineDataset(Dataset):
+    def __init__(self, csv_path, seq_len=512, noise_std=0.01):
+        df = pd.read_csv(csv_path)
+        self.data = df[['open', 'high', 'low', 'close', 'volume', 'amount']].values.astype('float32')
+        self.seq_len = seq_len
+        self.noise_std = noise_std
+        self.valid_starts = list(range(0, len(self.data) - seq_len))
+
+    def __len__(self):
+        return len(self.valid_starts)
+
+    def __getitem__(self, idx):
+        start = self.valid_starts[idx]
+        x = self.data[start:start + self.seq_len].copy()
+        # 数据增强：添加高斯噪声（仅在训练时）
+        if self.noise_std > 0:
+            x += np.random.normal(0, self.noise_std * x.std(axis=0), size=x.shape).astype('float32')
+        return torch.from_numpy(x)
+```
+
+**验证方法**：
+1. 用项目的示例数据创建 Dataset，检查 `__getitem__` 返回张量的形状是否为 `(seq_len, 6)`
+2. 对比原始数据和增强数据的标准差——增强后的标准差应略大于原始数据（约增大 `noise_std` 倍）
+3. 多次调用 `__getitem__(0)` 应返回不同的增强结果（随机性）
 
 ---
 
@@ -364,7 +480,3 @@ def test_custom_dataset():
 | [常见错误排查](../references/troubleshooting.md) | 调试技巧与错误排查方法 |
 | [模型对比与选型](07-model-comparison.md) | 不同模型规模的参数差异 |
 
----
-**文档元信息**
-难度：⭐⭐⭐ | 类型：开发指南 | 预计阅读时间：25 分钟
-更新日期：2026-04-11

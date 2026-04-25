@@ -84,6 +84,8 @@ qlib.init(provider_uri="~/.qlib/qlib_data/cn_data")
 | `predict_window` | 10 | 预测未来窗口长度 |
 | `feature_list` | `['open','high','low','close','vol','amt']` | 使用的特征列 |
 
+> **命名差异说明**：Qlib 微调流水线（`finetune/config.py`）使用 `'vol'`/`'amt'` 作为成交量/成交额的列名，这是 Qlib 平台的命名惯例。而推理阶段的 `KronosPredictor`（`model/kronos.py`）使用 `'volume'`/`'amount'`。两者是独立的代码路径——Qlib 流水线从 pickle 文件加载数据时直接使用 Qlib 的列名，`KronosPredictor` 则面向标准 CSV 输入，不需要手动转换。
+
 ### 训练配置
 
 | 参数 | 默认值 | 说明 |
@@ -131,7 +133,7 @@ torchrun --standalone --nproc_per_node=2 finetune/train_tokenizer.py
 3. 训练循环
    └─ 前向：encode → BSQ → decode
    └─ 损失：(recon_loss_pre + recon_loss_all + bsq_loss) / 2
-   └─ 优化器：AdamW + OneCycleLR
+   └─ 优化器：AdamW + OneCycleLR（pct_start=0.03, div_factor=10）
    └─ 梯度裁剪：max_norm=2.0
 
 4. 验证与保存
@@ -151,6 +153,8 @@ recon_loss = recon_loss_pre + recon_loss_all
 
 loss = (recon_loss + bsq_loss) / 2
 ```
+
+> **训练损失 vs 验证损失的差异**：训练时使用 `z_pre`（仅 s1 重建）和 `z`（完整重建）的 MSE 之和作为重建损失。但验证时，源码（`train_tokenizer.py` 第 180-182 行）只计算 `MSE(z, batch_x)`——即仅用细粒度重建的 MSE 作为验证指标。这意味着训练损失和验证损失不完全可比：验证损失通常低于训练中的总重建损失，因为它只衡量了其中一部分。如果你需要训练-验证损失严格可比，可以修改验证逻辑加入 `z_pre` 项。
 
 ---
 
@@ -362,6 +366,26 @@ torchrun --standalone --nproc_per_node=1 finetune/train_tokenizer.py
 3. 使用更小的模型（如 `Kronos-small` 替代 `Kronos-base`）
 4. 减小 `lookback_window`（默认 90，可降至 60）
 
+### Q: Qlib 数据预处理（qlib_data_preprocess.py）报错？
+
+**A**: 数据预处理阶段最常见的错误及解决方案：
+
+| 错误信息 | 原因 | 解决方案 |
+|---------|------|---------|
+| `FileNotFoundError: ~/.qlib/qlib_data/cn_data` | Qlib 数据未下载 | 先运行 `python -m qlib.run.get_data qlib_data --target_dir ~/.qlib/qlib_data/cn_data --region cn` |
+| `KeyError: 'vol'` / `KeyError: 'amt'` | Qlib 数据版本不匹配 | 检查 Qlib 版本是否兼容，确认数据包含 `$open/$close/$volume/$turn` 等字段 |
+| pickle 文件为空或只有几百 KB | 股票池+时间范围内无有效数据 | 检查 `train_time_range` / `val_time_range` 是否与下载数据的时间范围重叠 |
+| `RuntimeError: Can't open file` | 路径权限问题 | 确保对 `dataset_path` 有写入权限 |
+
+### Q: 学习率调度器（OneCycleLR）的参数含义？
+
+**A**: 两个训练脚本均使用 `OneCycleLR` 调度器，且参数完全一致（`pct_start=0.03, div_factor=10`）。这一结论已通过源码确认：`train_tokenizer.py` 和 `train_predictor.py` 均在第 77-80 行附近使用相同配置创建调度器。
+
+- **pct_start=0.03**：前 3% 的训练步用于 warmup（从 `max_lr / 10` 线性上升到 `max_lr`），之后余弦退火到接近 0
+- **div_factor=10**：初始学习率为 `max_lr / 10`，即分词器训练从 2e-5 开始，预测模型从 4e-6 开始
+
+对于 30 epoch 的训练，warmup 阶段约占第 1 个 epoch 的前 3%（约几十个 batch），之后学习率快速下降。如果你发现训练初期损失剧烈震荡，可以增大 `div_factor`（如 25）来降低初始学习率。
+
 ### Q: 分词器微调和预测模型微调哪个更重要？
 
 **A**: 取决于数据与预训练数据的差异程度。如果市场特征与预训练数据差异较大（如使用特殊指标），分词器微调更重要。如果只是适应新市场的规律，预测模型微调通常足够。
@@ -429,7 +453,3 @@ torchrun --standalone --nproc_per_node=1 finetune/train_tokenizer.py
 - **进阶**：[源码走读](../architecture/04-source-code-walkthrough.md) — 深入训练代码实现
 - **实战**：[A 股市场预测实战](04-cn-markets.md) — 微调后用于 A 股预测
 
----
-**文档元信息**
-难度：⭐⭐⭐ | 类型：进阶指南 | 预计阅读时间：25 分钟
-更新日期：2026-04-11

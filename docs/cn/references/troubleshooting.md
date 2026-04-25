@@ -24,6 +24,7 @@
 | `MPS does not support` | Apple Silicon MPS 后端限制 | [MPS 错误](#mpsapple-silicon相关问题) |
 | 训练损失不下降 | 超参数或数据问题 | [训练不收敛](#训练损失不下降) |
 | 预测为直线 | 参数或数据问题 | [预测结果为一条直线](#预测结果为一条直线) |
+| amount 列异常 | 有 volume 无 amount 时的自动推算 | [amount 异常](#valueerror-amount-列值异常有-volume-但-amount-被自动推算) |
 
 ---
 
@@ -181,6 +182,20 @@ for col in ['open', 'high', 'low', 'close']:
     neg_count = (df[col] < 0).sum()
     if zero_count > 0 or neg_count > 0:
         print(f"{col}: {zero_count} 个零值, {neg_count} 个负值")
+```
+
+### ValueError: amount 列值异常（有 volume 但 amount 被自动推算）
+
+**触发场景**：输入 DataFrame 有 `volume` 列但没有 `amount` 列时，KronosPredictor 自动推算 `amount = volume * mean(open, high, low, close)`（逐行算术均价）。如果 `volume` 与实际成交额差距大，可能影响预测质量。
+
+**排查步骤**：
+
+```python
+# 检查推算 amount 与真实 amount 的偏差
+if 'volume' in df.columns and 'amount' not in df.columns:
+    estimated_amount = df['volume'] * df[['open', 'high', 'low', 'close']].mean(axis=1)
+    print(f"amount 已自动推算（算术均价 × volume），非真实成交额")
+    print(f"建议：如有真实 amount 数据，请手动添加到 DataFrame 中")
 ```
 
 ---
@@ -373,6 +388,7 @@ torchrun --standalone --nproc_per_node=1 finetune/train_tokenizer.py
 3. **增加历史窗口**：`lookback` 建议不低于 200
 4. **增加采样次数**：`sample_count=5` 可获得更稳定的结果
 5. **调整温度**：`T=1.0` 是推荐起点
+6. **确认模型处于 eval 模式**：如果在预测前手动调用了 `model.train()` 而非 `model.eval()`，dropout 层会处于激活状态，导致预测结果不稳定。`KronosPredictor` 内部通过 `torch.no_grad()` 禁用梯度计算，但**不会**自动调用 `model.eval()`。如果你的代码在 `predict()` 之前调用了 `model.train()`，需要手动调用 `model.eval()` 恢复
 
 > **注意**：金融预测本身具有高度不确定性。模型预测反映的是基于历史模式的概率分布，不是确定性预测。
 
@@ -413,6 +429,16 @@ def fix_ohlc_logic(pred_df):
 
 pred_df = fix_ohlc_logic(pred_df)
 ```
+
+> **性能提示**：上述 `fix_ohlc_logic` 逐行迭代，对于大量数据（如数万条预测）可能较慢。以下是使用 pandas 向量化操作的替代版本，可显著提升速度：
+>
+> ```python
+> def fix_ohlc_logic_vectorized(pred_df):
+>     """向量化版本：修复 OHLC 逻辑不一致"""
+>     pred_df['high'] = pred_df[['high', 'open', 'close']].max(axis=1)
+>     pred_df['low'] = pred_df[['low', 'open', 'close']].min(axis=1)
+>     return pred_df
+> ```
 
 ---
 
@@ -542,7 +568,6 @@ if torch.isnan(decoded).any():
 - [ ] 我能说出训练不收敛的至少 3 个排查方向
 - [ ] 我知道如何用 `detect_anomaly` 定位 NaN 来源
 - [ ] 我知道分词器与模型不匹配时会出现什么错误
+- [ ] 我知道 `KronosPredictor` 不会自动调用 `model.eval()`，需要在手动调用 `model.train()` 后自行恢复
 
 ---
-**文档元信息**
-类型：参考文档 | 预计阅读时间：20 分钟 | 更新日期：2026-04-12

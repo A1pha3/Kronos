@@ -59,6 +59,8 @@ predictor = KronosPredictor(
 
 ## predict() — 单序列预测
 
+> **参数默认值提醒**：`predict()` 的默认采样参数为 `top_p=0.9, sample_count=1`，而内部调用的 `auto_regressive_inference()` 函数默认值为 `top_p=0.99, sample_count=5`。由于 `predict()` 会将自己的参数值透传给内部函数，**用户实际使用时由 `predict()` 的默认值控制行为**。如果直接调用底层函数（非推荐用法），需注意此差异。
+
 ```python
 pred_df = predictor.predict(
     df=x_df,                # 历史数据 DataFrame
@@ -604,6 +606,3 @@ for sc in [1, 3, 5, 10]:
 - **参考**：[使用场景与实战案例](../advanced/06-use-cases.md) ⭐⭐ — 不同场景的参数配置建议
 - **参考**：[模型对比与选型](../advanced/07-model-comparison.md) ⭐⭐ — 不同模型的性能特征
 
----
-**文档元信息**
-难度：⭐⭐ | 类型：核心概念 | 更新日期：2026-04-11 | 预计阅读时间：25 分钟

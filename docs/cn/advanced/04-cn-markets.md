@@ -31,8 +31,21 @@
 | T+1 交易制度 | 当日买入的股票次日才能卖出 | 日内数据不受影响，但日线数据反映的是 T+1 约束下的交易行为 |
 | 涨跌停限制 | 主板 ±10%，创业板/科创板 ±20% | 模型预测不受此限制，需要后处理裁剪 |
 | 集合竞价 | 开盘和收盘前有集合竞价时段 | 可能产生跳空缺口，影响 OHLC 数据的连续性 |
-| 停牌机制 | 个股可能因各种原因暂停交易 | 停牌日数据可能记录为开盘价 0，需要预处理 |
+| 停牌机制 | 个股可能因各种原因暂停交易 | 停牌日数据可能记录为开盘价 0、成交量 0，需要预处理 |
 | 涨跌停封板 | 涨停/跌停时买卖单不平衡 | 可能导致成交量与价格变动的非线性关系 |
+| 复权处理 | 除权除息导致价格跳跃（前复权/后复权/不复权） | 见下方详细说明 |
+
+#### 复权说明
+
+脚本使用 `adjust=""`（不复权）获取原始价格数据。这是因为 Kronos 模型学习的是原始价格模式，而复权操作会改变历史价格的真实数值。如果使用前复权数据，除权日之前的所有价格都会被调整，可能引入与实际交易价格不一致的模式。
+
+| 复权方式 | akshare 参数 | 特点 | 是否推荐用于 Kronos |
+|---------|-------------|------|-------------------|
+| 不复权 | `adjust=""` | 原始交易价格，保留除权跳跃 | 推荐——与模型预训练数据一致 |
+| 前复权 | `adjust="qfq"` | 以最新价格为基准回溯调整 | 不推荐——历史价格被人为修改 |
+| 后复权 | `adjust="hfq"` | 以上市价格为基准向前调整 | 不推荐——价格数值偏离实际交易价 |
+
+> **例外**：如果你对某只分红频繁的股票进行长期预测（如 5 年以上日线），不复权数据中除权日的价格跳跃可能干扰模型。此时可以尝试前复权数据，但需要意识到这是与预训练分布不同的输入。
 
 ---
 
@@ -90,13 +103,81 @@ df.rename(columns={
     "成交量": "volume", "成交额": "amount"
 }, inplace=True)
 
-# 修复异常开盘价（停牌日记录为 0）
+# 转换日期并排序
+df["date"] = pd.to_datetime(df["date"])
+df = df.sort_values("date").reset_index(drop=True)
+
+# 数值列清洗：去除千分位逗号、替换缺失值标记、转为数值类型
+numeric_cols = ["open", "high", "low", "close", "volume", "amount"]
+for col in numeric_cols:
+    df[col] = (
+        df[col]
+        .astype(str)
+        .str.replace(",", "", regex=False)
+        .replace({"--": None, "": None})
+    )
+    df[col] = pd.to_numeric(df[col], errors="coerce")
+
+# 修复异常开盘价（停牌日记录为 0 或 NaN）
 bad_open = (df["open"] == 0) | (df["open"].isna())
 df.loc[bad_open, "open"] = df["close"].shift(1)
+df["open"].fillna(df["close"], inplace=True)  # 处理首行 shift 产生的 NaN
 
 # 修复缺失成交额
 if df["amount"].isna().all() or (df["amount"] == 0).all():
     df["amount"] = df["close"] * df["volume"]
+```
+
+#### 停牌数据处理说明
+
+停牌日的数据可能表现为以下几种形式：
+
+| 情况 | 数据表现 | 脚本处理方式 |
+|------|---------|-------------|
+| 完全停牌 | `open=0, close=0, volume=0` | `open` 被替换为前一日 `close`，但 `volume=0` 和 `close=0` 仍保留 |
+| 部分数据缺失 | `open=0, close=正常值` | `open` 被替换为前一日 `close` |
+| 数据源未记录停牌 | 该日无数据行 | 无需处理——日期序列中自然跳过 |
+
+> **重要提示**：当前脚本仅修复了 `open=0` 的情况。如果停牌导致 `close=0` 且 `volume=0`，这些异常行可能影响模型预测质量。对于长时间停牌（如超过 5 个交易日）的个股，建议在数据预处理阶段完整移除停牌期间的所有行，或使用 `df = df[df["volume"] > 0]` 过滤掉无交易的日期。
+
+#### 推荐预处理：完整数据清洗代码
+
+以下代码片段整合了所有清洗步骤，可直接复制使用：
+
+```python
+import pandas as pd
+
+def clean_a_share_data(df):
+    """A 股日 K 线数据完整预处理（可直接复制使用）"""
+    numeric_cols = ["open", "high", "low", "close", "volume", "amount"]
+
+    # 1. 数值列清洗：去除千分位逗号、缺失值标记
+    for col in numeric_cols:
+        if df[col].dtype == object:
+            df[col] = (
+                df[col].astype(str)
+                .str.replace(",", "", regex=False)
+                .replace({"--": None, "": None})
+            )
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    # 2. 移除停牌/无交易日（volume=0 的行）
+    df = df[df["volume"] > 0].copy()
+
+    # 3. 修复开盘价异常（open=0 或 NaN → 用前一日收盘价填充）
+    bad_open = (df["open"] == 0) | (df["open"].isna())
+    df.loc[bad_open, "open"] = df["close"].shift(1)
+    df["open"].fillna(df["close"], inplace=True)
+
+    # 4. 处理剩余 NaN（前向填充 + 回填）
+    df[numeric_cols] = df[numeric_cols].ffill().bfill()
+
+    # 5. 修复缺失成交额
+    if df["amount"].isna().all() or (df["amount"] == 0).all():
+        df["amount"] = df["close"] * df["volume"]
+
+    df.reset_index(drop=True, inplace=True)
+    return df
 ```
 
 ### 3. 生成未来时间戳
@@ -284,6 +365,29 @@ pred_df = apply_price_limits(pred_df, last_close, limit_rate=0.05)
 
 **验证方法**：对比修改前后生成的 `pred_600686_chart.png`，使用 `limit_rate=0.05` 时，预测曲线的单日最大涨跌幅不应超过 5%。可以检查 CSV 数据中相邻两根 K 线的收盘价变化率来确认。
 
+### 练习 2：预测创业板股票并应用 ±20% 涨跌停限制
+
+创业板（股票代码以 `300` 开头）的涨跌停幅度为 ±20%，与主板的 ±10% 不同。尝试预测一只创业板股票：
+
+```bash
+# 预测宁德时代（300750）
+python examples/prediction_cn_markets_day.py --symbol 300750
+```
+
+在脚本中将 `limit_rate` 修改为 `0.2`：
+
+```python
+# 修改前
+pred_df = apply_price_limits(pred_df, last_close, limit_rate=0.1)
+
+# 修改后
+pred_df = apply_price_limits(pred_df, last_close, limit_rate=0.2)
+```
+
+**验证方法**：检查输出的 CSV 文件中，相邻两根预测 K 线的收盘价变化率不超过 20%。如果股票代码以 `688` 开头（科创板），涨跌停幅度同为 ±20%，处理方式相同。
+
+> **进阶挑战**：修改脚本，使其根据股票代码自动判断板块并设置对应的 `limit_rate`（提示：根据 `symbol` 的前缀判断——`300`/`688` 开头为 0.2，`688` 开头为 0.2，`8` 开头为 0.3，其余为 0.1）。
+
 ---
 
 ## 自测清单
@@ -295,6 +399,7 @@ pred_df = apply_price_limits(pred_df, last_close, limit_rate=0.05)
 - [ ] 理解 `apply_price_limits` 中为什么用修正后的收盘价作为下一根 K 线的基准
 - [ ] 能针对 ST 股票和创业板分别设置正确的 `limit_rate` 值
 - [ ] 知道如何通过 `SAMPLE_COUNT` 和 `PRED_LEN` 平衡预测的稳定性和实用性
+- [ ] 理解为什么脚本使用不复权数据（`adjust=""`），以及何时可能需要使用复权数据
 
 ---
 
@@ -313,7 +418,3 @@ pred_df = apply_price_limits(pred_df, last_close, limit_rate=0.05)
 - **微调**：[CSV 微调指南](02-finetune-csv.md) — 用 A 股数据微调提升效果
 - **微调**：[Qlib 微调指南](01-finetune-qlib.md) — 使用 Qlib 平台微调
 
----
-**文档元信息**
-难度：⭐⭐⭐ | 类型：进阶指南 | 预计阅读时间：15 分钟
-更新日期：2026-04-11

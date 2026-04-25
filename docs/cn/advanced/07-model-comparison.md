@@ -41,13 +41,19 @@ Kronos 提供四个规模的预测模型。**Kronos-mini 使用专用的 `Kronos
 | `s1_bits` / `s2_bits` | 10 / 10 | 10 / 10 | 10 / 10 | 10 / 10 |
 | **上下文长度** | **2048** | 512 | 512 | 512 |
 | **专用分词器** | **Kronos-Tokenizer-2k** | Kronos-Tokenizer-base | Kronos-Tokenizer-base | Kronos-Tokenizer-base |
-| `d_model` | — | 512 | — | — |
-| `n_layers` | — | 8 | — | — |
-| `n_heads` | — | 8 | — | — |
-| `ff_dim` | — | 1024 | — | — |
-| `learn_te` | — | true | — | — |
+| `d_model` | 256 | 512 | 832 | — |
+| `n_layers` | 4 | 8 | 12 | — |
+| `n_heads` | 4 | 8 | 16 | — |
+| `ff_dim` | 512 | 1024 | 2048 | — |
+| `learn_te` | true | true | true | — |
 
-> **注意**：上表中标注"—"的参数存储在各模型的 `config.json` 中，部分模型（mini、base、large）需要通过 HuggingFace Hub 认证后才能访问。加载模型后可通过 `model.config` 查看完整参数。已确认的 small 模型参数来自其公开的 `config.json`。
+> **数据来源**：mini、small、base 的参数已从各模型在 HuggingFace Hub 上公开的 `config.json` 验证确认。large 为私有仓库，参数不可公开获取。加载模型后可通过 `model.config` 查看完整参数：
+>
+> ```python
+> from model import Kronos
+> model = Kronos.from_pretrained("NeoQuasar/Kronos-small")
+> print(model.config)  # 查看 d_model, n_layers, n_heads, ff_dim, learn_te 等全部参数
+> ```
 
 **关键点**：
 
@@ -68,7 +74,7 @@ Kronos 提供四个规模的预测模型。**Kronos-mini 使用专用的 `Kronos
 | Transformer 层 | `≈ 4 × d_model² × n_layers`（自注意力 + 前馈） | **二次方** |
 | 双头输出 | `(vocab_s1 + vocab_s2) × d_model` | 线性 |
 
-因此，`d_model` 的增大对参数量的影响远大于 `n_layers`。从 small（d_model=512）到 base（估计 d_model≈832），`d_model` 增长约 63%，但 Transformer 层的参数量增长约 165%（832²/512² ≈ 2.65 倍）。
+因此，`d_model` 的增大对参数量的影响远大于 `n_layers`。从 small（d_model=512）到 base（d_model=832），`d_model` 增长约 63%，但 Transformer 层的参数量增长约 165%（832²/512² ≈ 2.65 倍）。
 
 ---
 
@@ -290,6 +296,11 @@ for model_name in ["NeoQuasar/Kronos-small", "NeoQuasar/Kronos-base"]:
 | [批量预测指南](03-batch-prediction.md) | ⭐⭐⭐ | 多序列并行预测 |
 | [CSV 微调指南](02-finetune-csv.md) | ⭐⭐⭐ | 微调提升特定市场效果 |
 
----
-**文档元信息**
-难度：⭐⭐ | 类型：选型指南 | 预计阅读时间：15 分钟 | 更新日期：2026-04-12
+## 相关文档
+
+| 文档 | 说明 |
+|------|------|
+| [KronosPredictor 使用指南](../core-concepts/04-predictor.md) | 预测参数详解 |
+| [使用场景与实战案例](06-use-cases.md) | 不同场景的参数配置建议 |
+| [常见问题](../references/faq.md) | 模型选择相关常见问题 |
+

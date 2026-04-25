@@ -209,6 +209,8 @@ def forward(self, hidden_states, sibling_embed, key_padding_mask=None):
 
 **注意残差连接的方向**：`hidden_states + attn_out`，不是 `sibling_embed + attn_out`。残差连接保留的是 Transformer 的上下文信息，交叉注意力的输出作为对上下文的修正。
 
+**完整签名**：实际调用中 `DependencyAwareLayer.forward()` 还接收 `key_padding_mask` 参数（`kronos.py` 第 274 行），用于在填充位置屏蔽交叉注意力的 key/value。上面的伪代码省略了此参数。
+
 ---
 
 ### DualHead
@@ -316,7 +318,7 @@ def __init__(self, s1_bits, s2_bits, n_layers, d_model, n_heads, ff_dim, ...):
     ])
     self.norm = RMSNorm(d_model)
     self.head = DualHead(s1_bits, s2_bits, d_model)
-    self.dep_layer = DependencyAwareLayer(d_model, n_heads=4)
+    self.dep_layer = DependencyAwareLayer(d_model)
 ```
 
 **forward()** `kronos.py:239-276`：
@@ -349,6 +351,8 @@ def forward(self, s1_ids, s2_ids, stamp=None, padding_mask=None,
 ```
 
 **token_drop**：在嵌入后应用 Dropout。在训练中随机将某些令牌的嵌入置零，迫使模型不依赖任何单个令牌，增强鲁棒性。
+
+> **注意**：`decode_s1()` 和 `decode_s2()` 中也包含 `self.token_drop(x)` 调用。由于推理时这些方法是在 `model.eval()` + `torch.no_grad()` 下执行的，Dropout 层不会实际丢弃令牌（`eval()` 模式下 Dropout 是恒等操作）。但如果推理前忘记调用 `model.eval()`，`token_drop` 会导致预测结果不可复现。`auto_regressive_inference()` 使用 `torch.no_grad()` 但没有显式调用 `model.eval()`——`KronosPredictor.generate()` 也没有调用。这意味着如果模型之前处于训练模式，推理结果会是不确定的。正常使用场景中不会出现这个问题（`from_pretrained` 加载的模型默认是 eval 模式），但在自定义训练-推理交替的流程中需要留意。
 
 ---
 
@@ -544,6 +548,7 @@ def get_model_class(model_name):
     if model_name in model_dict:
         return model_dict[model_name]
     else:
+        print(f"Model {model_name} not found in model_dict")
         raise NotImplementedError
 ```
 
@@ -563,7 +568,7 @@ def get_model_class(model_name):
 
 ---
 
-## 🧪 动手练习
+## 动手练习
 
 ### 练习 1：对照源码理解 BSQ 量化
 
@@ -587,7 +592,7 @@ def get_model_class(model_name):
 
 ---
 
-## ✅ 自测清单
+## 自测清单
 
 - [ ] 我能在源码中定位 BSQ 量化的三行核心代码（二值化、直通、缩放）
 - [ ] 我能解释 `KronosTokenizer.forward()` 为什么解码器被遍历两次（共享解码器）
@@ -612,7 +617,9 @@ for layer in self.decoder:
     z = layer(z)
 ```
 
-这看似正确，但会改变语义——原始实现中，第二个循环开始时解码器的权重已经被第一个循环的梯度更新过（在反向传播时）。更重要的是，s1 重建（z_pre）和完整重建（z）的输入来自不同的后量化嵌入，它们应该在**独立的**前向路径中被解码器处理。将两个循环合并不会改变前向结果（因为权重尚未更新），但会影响训练时梯度的累积方式。
+这看似正确，但会改变语义。需要明确的是：**在 `forward()` 执行期间，两个循环之间权重不会被更新**——权重更新只发生在反向传播阶段。两个独立循环的真正区别在于**梯度累积**：反向传播时，第一个循环（s1 重建）和第二个循环（完整重建）各自对解码器权重计算的梯度会分别累积。如果合并为单次循环，虽然前向计算结果相同（因为权重在 forward 期间保持不变），但梯度的计算图结构会改变——两次解码器调用将共享同一次循环的中间状态，而非各自独立地经过完整的解码器前向路径。
+
+更深层的原因是：s1 重建（z_pre）和完整重建（z）的输入来自不同的后量化嵌入，它们应该在**语义上独立的**前向路径中被解码器处理，以保持各自梯度的独立性。
 
 ### 陷阱 2：DependencyAwareLayer 的残差方向
 
@@ -631,7 +638,7 @@ return self.norm(sibling_embed + attn_out)
 
 ### 陷阱 4：sample_count 扩展后的 reshape 顺序
 
-多采样并行通过 `x.repeat(1, sample_count, 1, 1).reshape(-1, seq_len, feat)` 实现。这个特定的 reshape 顺序确保同一序列的不同采样在 batch 维度上是连续的（[seq0_sample0, seq0_sample1, ..., seq1_sample0, seq1_sample1, ...]）。如果误用 `reshape(sample_count, -1, seq_len, feat)`，batch 维度的排列将被打乱，导致后续 `z.reshape(-1, sample_count, ...)` 还原时对应关系错误。
+多采样并行通过 `x.repeat(1, sample_count, 1, 1).reshape(-1, seq_len, feat)` 实现，其中 `seq_len = x.size(1)`（时间步数），`feat = x.size(2)`（特征数 6）。这个特定的 reshape 顺序确保同一序列的不同采样在 batch 维度上是连续的（[seq0_sample0, seq0_sample1, ..., seq1_sample0, seq1_sample1, ...]）。如果误用 `reshape(sample_count, -1, seq_len, feat)`，batch 维度的排列将被打乱，导致后续 `z.reshape(-1, sample_count, ...)` 还原时对应关系错误。
 
 ### 陷阱 5：bits_to_indices 的小端序 vs 大端序
 
@@ -641,6 +648,15 @@ return self.norm(sibling_embed + attn_out)
 
 `KronosPredictor.__init__()` 会自动执行 `self.tokenizer = self.tokenizer.to(self.device)` 和 `self.model = self.model.to(self.device)`。如果在构造 `KronosPredictor` 之前已经手动将模型移到 GPU，构造函数会再次调用 `.to()`——虽然结果是正确的（模型已在目标设备上），但会产生不必要的设备转移开销。更严重的是，如果之后修改了 `self.model` 的引用但没有同步更新 `KronosPredictor` 持有的引用，推理仍会使用旧设备上的模型。
 
+### 陷阱 7：predict() 的 NaN 检查是严格的
+
+`predict()` 和 `predict_batch()` 中的 NaN 检查会直接抛出 `ValueError`（`kronos.py` 第 534 行），不会尝试静默填充。这与 CSV 微调流水线的 `CustomKlineDataset`（使用前向填充）行为不同。如果你从 CSV 微调流水线切换到直接调用 `predict()`，需要确保输入数据中没有 NaN——否则需要在外部预处理阶段完成填充。
+
+```python
+# 如果数据可能包含 NaN，在调用 predict() 前预处理：
+df = df.fillna(method='ffill').fillna(0)
+```
+
 ---
 
 ## 相关文档
@@ -649,7 +665,3 @@ return self.norm(sibling_embed + attn_out)
 - [Transformer 设计分析](03-transformer-design.md) — 深入理解各 Transformer 组件的设计原理与替代方案
 - [开发扩展指南](../advanced/08-development-guide.md) — 基于源码理解进行二次开发与扩展的实践指南
 
----
-
-**文档元信息**
-难度：⭐⭐⭐⭐ | 类型：专家设计 | 预计阅读时间：40 分钟 | 更新日期：2026-04-11

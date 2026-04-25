@@ -143,9 +143,10 @@ GET /api/data-files
 **响应示例**：
 
 ```json
-{
-  "files": ["XSHG_5min_600977.csv", "000001_daily.csv"]
-}
+[
+  {"name": "XSHG_5min_600977.csv", "path": "/path/to/data/XSHG_5min_600977.csv", "size": "128.5 KB"},
+  {"name": "000001_daily.csv", "path": "/path/to/data/000001_daily.csv", "size": "256.3 KB"}
+]
 ```
 
 ### 2. 加载数据文件
@@ -158,7 +159,7 @@ POST /api/load-data
 
 ```json
 {
-  "filename": "XSHG_5min_600977.csv"
+  "file_path": "/path/to/data/XSHG_5min_600977.csv"
 }
 ```
 
@@ -167,21 +168,46 @@ POST /api/load-data
 ```json
 {
   "success": true,
-  "data": {
-    "columns": ["open", "high", "low", "close", "volume", "amount"],
-    "length": 1000,
-    "start_date": "2024-01-02",
-    "end_date": "2024-06-30"
-  }
+  "data_info": {
+    "rows": 1000,
+    "columns": ["open", "high", "low", "close", "volume", "amount", "timestamps"],
+    "start_date": "2024-01-02T00:00:00",
+    "end_date": "2024-06-30T00:00:00",
+    "price_range": {"min": 5.12, "max": 18.76},
+    "prediction_columns": ["open", "high", "low", "close", "volume"],
+    "timeframe": "5 minutes"
+  },
+  "message": "Successfully loaded data, total 1000 rows"
 }
 ```
 
 后端执行的数据验证（源码位于 `webui/app.py` 的 `load_data_file()` 函数）：
 
-- 检查文件是否存在
+- 检查文件格式是否为 `.csv` 或 `.feather`
 - 检查必填列（`open`、`high`、`low`、`close`）是否存在
-- 补齐可选列（`volume`、`amount` 缺失时填充 0）
-- 检查 NaN 值
+- 通过 `pd.to_numeric(..., errors='coerce')` 先将 OHLC 列强制转为数值类型，再对 `volume`/`amount`（如存在）做同样转换，无法转换的值变为 `NaN`
+- 调用 `df.dropna()` 移除所有包含 `NaN` 值的行（包括因数值转换失败产生的 NaN）
+
+#### 时间戳列的自动识别
+
+后端按以下优先级自动识别时间戳列：
+
+1. `timestamps` 列（优先使用）
+2. `timestamp` 列（重命名为 `timestamps`）
+3. `date` 列（重命名为 `timestamps`）
+4. 如果以上列均不存在，自动生成从 `2024-01-01` 起每小时一行的时间戳
+
+> **提示**：如果你的数据文件使用 `date` 或 `datetime` 作为时间列名，Web UI 会自动处理，无需手动重命名。但建议统一使用 `timestamps` 列名以避免歧义。
+
+#### 数据长度不足时的错误
+
+预测时如果数据行数少于 `lookback` 参数（默认 400），后端会返回错误：
+
+```json
+{"error": "Insufficient data length, need at least 400 rows"}
+```
+
+解决方法：减小 `lookback` 参数值，或使用更长的数据文件。
 
 ### 3. 加载模型
 
@@ -193,13 +219,19 @@ POST /api/load-model
 
 ```json
 {
-  "model_name": "small"
+  "model_key": "kronos-small"
 }
 ```
 
-可选的 `model_name` 值：`mini`、`small`、`base`、`large`。
+可选的 `model_key` 值（由 `app.py` 中 `AVAILABLE_MODELS` 字典定义）：
 
-> **注意**：`mini` 模型使用 `Kronos-Tokenizer-2k` 分词器，其他模型使用 `Kronos-Tokenizer-base`。Web UI 会根据所选模型自动加载对应的分词器。
+| `model_key` | 模型 ID | 分词器 | 上下文长度 | 参数量 |
+|-------------|---------|--------|-----------|--------|
+| `kronos-mini` | `NeoQuasar/Kronos-mini` | `Kronos-Tokenizer-2k` | 2048 | 4.1M |
+| `kronos-small` | `NeoQuasar/Kronos-small` | `Kronos-Tokenizer-base` | 512 | 24.7M |
+| `kronos-base` | `NeoQuasar/Kronos-base` | `Kronos-Tokenizer-base` | 512 | 102.3M |
+
+> **注意**：Web UI 当前不支持 `Kronos-large`（未开源）。`mini` 模型使用专用的 `Kronos-Tokenizer-2k` 分词器，其余模型共用 `Kronos-Tokenizer-base`。Web UI 会根据所选模型自动加载对应的分词器和上下文长度配置。
 
 #### 模型加载后的内存行为
 
@@ -221,13 +253,12 @@ POST /api/predict
 
 ```json
 {
-  "filename": "XSHG_5min_600977.csv",
+  "file_path": "/path/to/data/XSHG_5min_600977.csv",
   "lookback": 400,
   "pred_len": 120,
   "temperature": 1.0,
   "top_p": 0.9,
-  "sample_count": 1,
-  "model_name": "small"
+  "sample_count": 1
 }
 ```
 
@@ -235,13 +266,12 @@ POST /api/predict
 
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `filename` | string | — | 数据文件名 |
+| `file_path` | string | — | 数据文件的完整路径 |
 | `lookback` | int | 400 | 历史窗口长度 |
 | `pred_len` | int | 120 | 预测步数 |
 | `temperature` | float | 1.0 | 温度参数 |
 | `top_p` | float | 0.9 | 核采样阈值 |
 | `sample_count` | int | 1 | 采样次数 |
-| `model_name` | string | "small" | 模型名称 |
 
 ### 5. 获取可用模型
 
@@ -251,6 +281,26 @@ GET /api/available-models
 
 返回所有可用的预训练模型列表。
 
+**响应示例**：
+
+```json
+{
+  "models": {
+    "kronos-mini": {
+      "name": "Kronos-mini",
+      "model_id": "NeoQuasar/Kronos-mini",
+      "tokenizer_id": "NeoQuasar/Kronos-Tokenizer-2k",
+      "context_length": 2048,
+      "params": "4.1M",
+      "description": "Lightweight model, suitable for fast prediction"
+    },
+    "kronos-small": { "..." : "..." },
+    "kronos-base": { "..." : "..." }
+  },
+  "model_available": true
+}
+```
+
 ### 6. 检查模型状态
 
 ```
@@ -258,6 +308,40 @@ GET /api/model-status
 ```
 
 返回当前已加载的模型信息。
+
+**响应示例（模型已加载）**：
+
+```json
+{
+  "available": true,
+  "loaded": true,
+  "message": "Kronos model loaded and available",
+  "current_model": {
+    "name": "Kronos",
+    "device": "cpu"
+  }
+}
+```
+
+**响应示例（模型未加载）**：
+
+```json
+{
+  "available": true,
+  "loaded": false,
+  "message": "Kronos model available but not loaded"
+}
+```
+
+**响应示例（模型库不可用）**：
+
+```json
+{
+  "available": false,
+  "loaded": false,
+  "message": "Kronos model library not available, please install related dependencies"
+}
+```
 
 ---
 
@@ -291,8 +375,8 @@ GET /api/model-status
 预测结果自动保存为 JSON 文件：
 
 ```
-outputs/
-├── pred_result_<timestamp>.json    # 预测结果
+webui/prediction_results/
+├── prediction_<timestamp>.json    # 预测结果
 ```
 
 JSON 文件包含完整的 OHLCV 预测数据和元信息（模型名称、参数配置等）。
@@ -359,7 +443,7 @@ pip install -r webui/requirements.txt
 **A**: 确保：
 
 1. 文件格式为 `.csv` 或 `.feather`
-2. 文件位于数据目录下（默认为项目根目录的 `examples/data/`）
+2. 文件位于数据目录下（默认为项目根目录的 `data/`）
 3. CSV 文件包含必填列：`open`、`high`、`low`、`close`
 4. CSV 文件的 `timestamps` 列能被 `pd.to_datetime` 正确解析
 
@@ -367,10 +451,20 @@ pip install -r webui/requirements.txt
 
 **A**: 检查以下设置：
 
-- 如果有 GPU，在 `webui/run.py` 或 `webui/app.py` 中设置 `device="cuda:0"`
-- 使用较小的模型（如 `Kronos-small`）
+- 如果有 GPU，在加载模型时通过 API 请求体传入 `"device": "cuda:0"`（`POST /api/load-model` 的 `device` 参数）
+- 使用较小的模型（如 `Kronos-mini` 或 `Kronos-small`）
 - 减小 `sample_count`（设为 1 最快）
 - 减小 `pred_len`（预测步数）
+
+> **注意**：模型加载时的设备选择是通过 `/api/load-model` 请求体中的 `device` 字段控制的，不是修改源码中的常量。默认值为 `"cpu"`。
+
+### Q: 预测结果中出现 "Kronos model not loaded" 错误？
+
+**A**: 后端在启动时检测 `model` 模块的可用性。如果导入失败，会设置 `MODEL_AVAILABLE = False`，此时所有预测请求都会返回此错误。确保：
+
+1. 项目根目录在 Python 搜索路径中（`run.py` 会自动处理）
+2. `model/` 目录完整且 `torch`、`huggingface_hub` 已安装
+3. 已通过 `POST /api/load-model` 成功加载模型（可先调用 `GET /api/model-status` 确认状态）
 
 ---
 
@@ -384,13 +478,44 @@ pip install -r webui/requirements.txt
 4. 设置 `lookback=200`、`pred_len=60`、`temperature=1.0`
 5. 执行预测，观察生成的图表
 
-**验证方法**：如果图表中出现蓝色历史段和红色预测段，且预测段紧接历史段末尾，说明预测成功。
+**验证方法**：图表应显示历史 K 线段和预测 K 线段。预测段应紧接历史段末尾，无时间间隙。用 Plotly 的悬停功能检查预测 K 线的 OHLC 值是否在合理范围内（不出现负数或超过历史均价 10 倍的异常值）。
 
 ### 练习 2：对比不同温度参数的预测效果
 
 在同一数据集上，分别使用 `temperature=0.3` 和 `temperature=1.5` 执行两次预测，对比图表中预测曲线的波动程度。
 
-**验证方法**：`temperature=1.5` 的预测曲线波动应明显大于 `temperature=0.3`。
+**验证方法**：`temperature=1.5` 的预测曲线波动应明显大于 `temperature=0.3`。如果两者差异不大，尝试增大对比（如 `T=0.1` vs `T=2.0`）。
+
+### 练习 3：通过 API 端点获取预测结果
+
+不使用浏览器界面，直接用 Python 调用 `/predict` API 端点，验证 Web UI 的 API 层独立可用：
+
+```python
+import requests
+import json
+
+# 确认 Web UI 正在运行
+resp = requests.get("http://localhost:7070/models")
+print("可用模型:", resp.json())
+
+# 获取数据文件列表
+resp = requests.get("http://localhost:7070/data_files")
+print("数据文件:", resp.json())
+
+# 执行预测
+payload = {
+    "model_name": "Kronos-small",
+    "data_file": "XSHG_5min_600977.csv",
+    "lookback": 200,
+    "pred_len": 60,
+    "temperature": 1.0
+}
+resp = requests.post("http://localhost:7070/predict", json=payload)
+result = resp.json()
+print("预测状态:", result.get("status", "unknown"))
+```
+
+**验证方法**：如果 `models` 和 `data_files` 端点正常返回列表，且 `predict` 端点返回 `status: success`，说明 API 层工作正常。如果返回 500 错误，检查数据文件路径是否在正确的 `data/` 目录下。
 
 ---
 
@@ -420,7 +545,3 @@ pip install -r webui/requirements.txt
 - **实战**：[A 股市场预测实战](04-cn-markets.md) — A 股完整预测流程
 - **参考**：[模型选型指南](07-model-comparison.md) — mini / small / base / large 对比
 
----
-**文档元信息**
-难度：⭐⭐ | 类型：进阶指南 | 预计阅读时间：15 分钟
-更新日期：2026-04-11

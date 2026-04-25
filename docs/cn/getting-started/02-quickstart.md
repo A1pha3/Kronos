@@ -103,9 +103,9 @@ y_timestamp = df.loc[lookback:lookback+pred_len-1, 'timestamps']
 | `low` | float | 最低价 | 必填 |
 | `close` | float | 收盘价 | 必填 |
 | `volume` | float | 成交量 | 可选（缺失时自动填充 0） |
-| `amount` | float | 成交额 | 可选（缺失时自动推算） |
+| `amount` | float | 成交额 | 可选（缺失时若 `volume` 存在则自动推算为 `volume × 均价`，否则填充为 0） |
 
-> 如果你的数据只有 OHLC 四列，没有 `volume` 和 `amount`，KronosPredictor 会自动补零，不影响价格预测。这是因为模型在预训练阶段已经学习了处理缺失成交量数据的模式——标准化后的零值不会主导价格特征的建模。
+> 如果你的数据只有 OHLC 四列，没有 `volume` 和 `amount`，KronosPredictor 会自动将两者填充为 0，不影响价格预测。如果只有 `volume` 但缺少 `amount`，则会自动推算为 `volume × 均价`。模型在预训练阶段已经学习了处理缺失成交量数据的模式——标准化后的零值不会主导价格特征的建模。
 
 ### 步骤 3：执行预测（预计 5 分钟）
 
@@ -136,9 +136,9 @@ pred_df = predictor.predict(
 print(pred_df.head())
 ```
 
-预期输出（具体数值取决于数据）：
+> **注意**：以下输出中的时间戳、价格数值和成交量均为示例，实际结果取决于你使用的数据文件和 `y_timestamp` 输入。无需与示例完全一致，只要 DataFrame 结构正确、数值在合理范围内即可。
 
-<!-- 以下仅为示意，具体输出取决于你的数据和 y_timestamp 输入 -->
+预期输出（具体数值取决于数据）：
 
 ```
                      open    high     low   close    volume    amount
@@ -193,25 +193,7 @@ Kronos 的输出是**基于历史模式的概率性预测**。每次运行可能
 
 ### 多次采样可以估计不确定性
 
-将 `sample_count` 设为 10 并分别观察每条预测路径的分布，可以得到预测的"置信区间"——路径越分散，说明模型越不确定。这比单次预测能提供更丰富的信息：
-
-```python
-# 生成 10 条独立路径
-paths = []
-for _ in range(10):
-    pred = predictor.predict(df=x_df, x_timestamp=x_timestamp,
-                            y_timestamp=y_timestamp, pred_len=60,
-                            T=1.0, top_p=0.9, sample_count=1, verbose=False)
-    paths.append(pred['close'].values)
-
-import numpy as np
-paths = np.array(paths)  # 形状: (10, 60)
-mean_path = paths.mean(axis=0)       # 平均预测
-p5_path = np.percentile(paths, 5, axis=0)   # 90% 置信区间下界
-p95_path = np.percentile(paths, 95, axis=0)  # 90% 置信区间上界
-```
-
-如果置信区间（p5 到 p95）很窄，说明模型对走势比较有信心；如果很宽，说明市场处于高不确定状态。
+将 `sample_count` 设为 10 并分别观察每条预测路径的分布，可以得到预测的"置信区间"——路径越分散，说明模型越不确定。实现方式是循环调用 `predict(sample_count=1)` 收集多条独立路径，再用 `np.percentile(paths, 5, axis=0)` 和 `np.percentile(paths, 95, axis=0)` 计算 90% 置信区间的上下界。如果区间很窄，说明模型对走势比较有信心；如果很宽，说明市场处于高不确定状态。完整代码示例参见 [使用场景与实战案例](../advanced/06-use-cases.md)。
 
 ### 预测结果的边界条件
 
@@ -288,7 +270,7 @@ print(pred_df.head())
 
 ---
 
-## 🧪 动手练习
+## 动手练习
 
 ### 练习 1：调整温度参数，观察预测差异
 
@@ -304,12 +286,14 @@ print(pred_df.head())
 
 ---
 
-## 你学到了什么
+## 要点回顾
 
-1. **三阶段流程**：Kronos 的预测经历"分词器编码 → 模型自回归生成 → 解码回原始数据"三个阶段，但 `KronosPredictor` 将其封装为一次 `predict()` 调用
-2. **数据格式**：输入是包含 OHLCV 列的 DataFrame，输出也是同样格式的 DataFrame
-3. **采样参数**：温度 `T` 和 `top_p` 控制预测的随机性与多样性
-4. **采样次数**：增大 `sample_count` 可以通过多次采样取均值来提升预测稳定性
+到这里，你已经跑通了 Kronos 的完整预测流程。几个关键点：
+
+- Kronos 的预测经历"分词器编码 → 模型自回归生成 → 解码回原始数据"三个阶段，但 `KronosPredictor` 将其封装为一次 `predict()` 调用
+- 输入是包含 OHLCV 列的 DataFrame，输出也是同样格式的 DataFrame
+- 温度 `T` 和 `top_p` 控制预测的随机性与多样性；增大 `sample_count` 可以通过多次采样取均值来提升稳定性
+- 预测是概率性的，关注趋势方向和波动范围比追求精确数值更有意义
 
 ---
 
@@ -377,7 +361,7 @@ export HF_HUB_CACHE=/data/hf_hub_cache    # 单独设置 Hub 缓存目录
 
 ---
 
-## ✅ 自测清单
+## 自测清单
 
 - [ ] 我能解释 Kronos 预测的三个阶段（分词 → 推理 → 解码）
 - [ ] 我能独立完成从加载模型到获取预测结果的完整流程
@@ -394,7 +378,3 @@ export HF_HUB_CACHE=/data/hf_hub_cache    # 单独设置 Hub 缓存目录
 | [数据准备指南](03-data-preparation.md) | ⭐ | 深入了解数据格式与预处理 |
 | [项目总览与核心概念](../core-concepts/01-overview.md) | ⭐⭐ | 理解两阶段框架的设计思想 |
 | [KronosPredictor 使用指南](../core-concepts/04-predictor.md) | ⭐⭐ | 掌握参数调优与批量预测 |
-
----
-**文档元信息**
-难度：⭐ | 类型：入门教程 | 预计阅读时间：15 分钟 | 最后更新：2026-04-11

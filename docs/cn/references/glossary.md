@@ -26,11 +26,11 @@
 | 解码器 | Decoder | KronosTokenizer 中将潜在表示还原为 OHLCV 的 Transformer 层 |
 | 量化器 | Quantizer | 将连续向量映射为离散码本的组件。Kronos 使用 BSQ 量化器 |
 | 码本 | Codebook | 量化器中所有可能离散值的集合。BSQ 的码本大小为 2^D |
-| 层级令牌 | Hierarchical Token | Kronos 将每根 K 线编码为两个层级的令牌：s1（粗粒度）和 s2（细粒度） |
-| s1 令牌 | s1 Token / Pre Token | 粗粒度令牌，使用码本的前 s1_bits 位，捕捉主要走势 |
-| s2 令牌 | s2 Token / Post Token | 细粒度令牌，使用码本的后 s2_bits 位，提供精细修正 |
+| 层级令牌 | Hierarchical Token | Kronos 将每根 K 线编码为两个层级的令牌：s1（粗粒度）和 s2（细粒度）。参见"二值球面量化"、"依赖感知层" |
+| s1 令牌 | s1 Token / Pre Token | 粗粒度令牌，使用码本的前 s1_bits 位，捕捉主要走势。参见"s2 令牌"、"层级令牌" |
+| s2 令牌 | s2 Token / Post Token | 细粒度令牌，使用码本的后 s2_bits 位，提供精细修正。参见"s1 令牌"、"依赖感知层" |
 | 双头 | DualHead | Kronos 模型的输出层，分别预测 s1 和 s2 的 logits |
-| 依赖感知层 | DependencyAwareLayer | 使用交叉注意力实现 s2 对 s1 条件依赖的模块 |
+| 依赖感知层 | DependencyAwareLayer | 使用交叉注意力实现 s2 对 s1 条件依赖的模块。参见"交叉注意力"、"层级令牌" |
 | 层级嵌入 | HierarchicalEmbedding | 将 s1 和 s2 令牌嵌入并融合为统一向量的模块 |
 | 时间嵌入 | TemporalEmbedding | 将时间特征（分钟、小时等）编码为向量的模块 |
 | 令牌嵌入 | Token Embedding | 将离散令牌 ID 映射为连续向量的查找表 |
@@ -43,20 +43,20 @@
 |---------|----------|------|
 | 二值球面量化 | Binary Spherical Quantization (BSQ) | 将连续向量量化为二值向量（±1）的方法，码本天然均匀分布 |
 | 直通估计器 | Straight-Through Estimator (STE) | 处理不可导操作（如量化）的技巧：前向用离散值，反向传递连续值的梯度 |
-| 承诺损失 | Commit Loss | 量化损失的一部分，衡量量化前后向量的距离，推动编码器输出靠近量化点 |
-| 熵正则化 | Entropy Regularization | 鼓励码本被均匀使用的正则化项，避免"死码"问题 |
+| 承诺损失 | Commit Loss | 量化损失的一部分，衡量量化前后向量的距离，推动编码器输出靠近量化点。参见"熵正则化" |
+| 熵正则化 | Entropy Regularization | 鼓励码本被均匀使用的正则化项，避免"死码"问题。参见"码本塌缩"、"承诺损失" |
 | 样本熵 | Per-Sample Entropy | 单个样本在各子组上的熵，鼓励每个样本的量化结果均匀分布 |
 | 码本熵 | Codebook Entropy | 所有样本的平均概率分布的熵，从宏观层面鼓励码本均匀使用 |
 | 分组近似 | Group Approximation | 将高维码本的熵分解为低维子码本熵之和的近似方法 |
 | 温度采样 | Temperature Sampling | 通过除以温度参数 T 控制采样分布尖锐程度的策略 |
 | 核采样 | Nucleus Sampling / Top-p | 保留累计概率达到 p 的候选令牌的采样策略 |
 | Top-k 采样 | Top-k Sampling | 只保留概率最高的 k 个候选令牌的采样策略 |
-| 贪婪解码 | Greedy Decoding | 始终选择概率最高的令牌，等价于 T→0 或 top_k=1 |
-| Teacher Forcing | Teacher Forcing | 训练时使用真实目标而非模型预测作为下一步输入的技术 |
-| 暴露偏差 | Exposure Bias | Teacher Forcing 的副作用：训练时模型看到的是真实标签，推理时只能看到自身的预测结果，两者分布不一致可能导致误差累积 |
+| 贪婪解码 | Greedy Decoding | 始终选择概率最高的令牌，等价于 T→0 或 top_k=1。参见"温度采样"、"Top-k 采样" |
+| Teacher Forcing | Teacher Forcing | 训练时使用真实目标而非模型预测作为下一步输入的技术。参见"暴露偏差" |
+| 暴露偏差 | Exposure Bias | Teacher Forcing 的副作用：训练时模型看到的是真实标签，推理时只能看到自身的预测结果，两者分布不一致可能导致误差累积。参见"Teacher Forcing" |
 | 实例级标准化 | Instance-Level Normalization | 对每条预测序列独立计算均值和标准差的 z-score 标准化方法，是 KronosPredictor 的默认行为。详见"数据相关"分组 |
 | z-score 标准化 | Z-Score Normalization | (x - mean) / std，将数据变换为零均值单位方差 |
-| 码本塌缩 | Codebook Collapse | 量化器中大部分码字从未被使用的现象，模型只集中使用极少数码字，导致表达能力严重浪费。BSQ 通过熵正则化天然避免此问题 |
+| 码本塌缩 | Codebook Collapse | 量化器中大部分码字从未被使用的现象，模型只集中使用极少数码字，导致表达能力严重浪费。BSQ 通过熵正则化天然避免此问题。参见"熵正则化" |
 | 置信区间 | Confidence Interval | 通过多次采样预测结果计算的概率区间（如 p5-p95），用于量化预测的不确定性 |
 | 蒙特卡洛采样 | Monte Carlo Sampling | 通过多次随机采样估计概率分布特征的方法。Kronos 中通过 `sample_count > 1` 实现多条独立预测路径 |
 
@@ -66,8 +66,8 @@
 
 | 中文术语 | 英文原文 | 定义 |
 |---------|----------|------|
-| 自注意力 | Self-Attention | 序列内部各位置之间计算注意力的机制 |
-| 交叉注意力 | Cross-Attention | 两个不同序列之间计算注意力的机制（query 来自一个序列，key/value 来自另一个） |
+| 自注意力 | Self-Attention | 序列内部各位置之间计算注意力的机制。参见"交叉注意力" |
+| 交叉注意力 | Cross-Attention | 两个不同序列之间计算注意力的机制（query 来自一个序列，key/value 来自另一个）。参见"自注意力"、"依赖感知层" |
 | 多头注意力 | Multi-Head Attention | 使用多组独立的注意力头并行计算，捕捉不同子空间的信息 |
 | 旋转位置编码 | Rotary Positional Embedding (RoPE) | 通过旋转矩阵将相对位置信息编码到 q 和 k 中的位置编码方法 |
 | 前馈网络 | Feed-Forward Network (FFN) | Transformer 块中的逐位置非线性变换层 |
@@ -104,11 +104,12 @@
 
 | 中文术语 | 英文原文 | 定义 |
 |---------|----------|------|
-| 滑动窗口 | Sliding Window | 在时间序列上按固定大小移动的窗口，用于采样训练数据和推理时的上下文管理 |
+| 滑动窗口 | Sliding Window | 在时间序列上按固定大小移动的窗口，用于采样训练数据和推理时的上下文管理。参见"最大上下文"、"滑动窗口缓冲区" |
 | 回看窗口 | Lookback Window | 模型输入使用的历史数据长度 |
 | 预测窗口 | Prediction Window | 模型预测的未来数据长度 |
 | 最大上下文 | Max Context | 模型能处理的最大令牌序列长度。Kronos-small/base/large 默认 512，Kronos-mini 为 2048。超过此长度的历史令牌被丢弃 |
-| 裁剪 | Clip | 将标准化后的值限制在 `[-clip, clip]` 范围内（默认 clip=5），抑制极端异常值的影响 |
+| 裁剪 | Clip | 将标准化后的值限制在 `[-clip, clip]` 范围内（默认 clip=5），抑制极端异常值的影响。KronosPredictor 在 z-score 标准化后自动执行裁剪 |
+| amount 推算 | Amount Imputation | 当输入 DataFrame 有 `volume` 但无 `amount` 时，KronosPredictor 自动推算：`amount = volume × mean(open, high, low, close)`（逐行算术均价，非成交量加权均价） |
 | 涨跌停 | Price Limit | A 股市场中单日价格涨跌幅不超过特定比例的限制。主板 ±10%，创业板/科创板 ±20%，ST 股 ±5%，北交所 ±30% |
 | 复权 | Adjusted Price | 对历史价格进行分红、送股等因素的调整，使价格序列连续可比。Kronos 不要求复权数据 |
 | 停牌 | Trading Suspension | 股票暂停交易的状态，数据中可能记录为开盘价为 0 或 NaN，需要在预测前处理 |
@@ -119,7 +120,7 @@
 
 | 中文术语 | 英文原文 | 定义 |
 |---------|----------|------|
-| KronosPredictor | KronosPredictor | Kronos 的高层预测接口（`kronos.py:484-661`），将数据预处理、分词编码、自回归推理、解码还原和后处理封装为 `predict()` 和 `predict_batch()` 两个方法 |
+| KronosPredictor | KronosPredictor | Kronos 的高层预测接口（`kronos.py:482-662`），将数据预处理、分词编码、自回归推理、解码还原和后处理封装为 `predict()` 和 `predict_batch()` 两个方法 |
 | predict() | predict() | 单序列预测方法，默认参数为 `T=1.0, top_k=0, top_p=0.9, sample_count=1` |
 | predict_batch() | predict_batch() | 批量预测方法，要求所有序列具有相同的历史长度 |
 | auto_regressive_inference | auto_regressive_inference | 自回归推理函数（`kronos.py:389-469`），维护滑动窗口缓冲区逐时间步生成令牌。默认参数为 `top_p=0.99, sample_count=5` |
@@ -157,6 +158,7 @@
 | 自回归推理、滑动窗口、采样策略 | [KronosPredictor 使用指南](../core-concepts/04-predictor.md) |
 | 源码实现细节、行号引用 | [源码走读](../architecture/04-source-code-walkthrough.md) |
 | 涨跌停、A 股数据处理 | [A 股市场预测实战](../advanced/04-cn-markets.md) |
+| 数据预处理、amount 推算、裁剪、标准化流程 | [KronosPredictor 使用指南](../core-concepts/04-predictor.md) |
 | 模型选型、参数量、上下文长度、分词器搭配 | [模型对比与选型指南](../advanced/07-model-comparison.md) |
 | 微调、DDP、Qlib、训练超参数 | [Qlib 微调指南](../advanced/01-finetune-qlib.md) / [CSV 微调指南](../advanced/02-finetune-csv.md) |
 
@@ -167,11 +169,10 @@
 | 术语 | Kronos 中的含义 | 容易混淆的点 |
 |------|----------------|-------------|
 | Tokenizer（分词器） | KronosTokenizer，包含编码器-解码器的完整模型 | 不是 NLP 中的文本分词器（如 BPE），而是将连续 OHLCV 向量量化为离散令牌 |
+| sibling_embed | `DependencyAwareLayer.forward()` 的参数名，指代 s1 令牌经过 `emb_s1` 嵌入后的向量，作为交叉注意力的 query 输入 | 与"兄弟令牌嵌入"同义——s1 和 s2 是同一根 K 线的两个层级令牌，s1 是 s2 的"兄弟"；该名称仅在源码接口层面使用，概念文档中通常直接称为"s1 嵌入" |
 | Token（令牌） | BSQ 量化后的离散索引 | 不是文本单词，而是 K 线的离散化表示 |
 | Decoder（解码器） | KronosTokenizer 的重建模块 | 不是语言模型的自回归解码器——它只做令牌到 OHLCV 的映射 |
 | Context（上下文） | 输入的历史令牌序列 | 与 LLM 的上下文概念相同，但 Kronos 的上下文是 K 线令牌而非文本 |
-| Vocabulary（词汇表） | s1 或 s2 的所有可能令牌集合 | 大小为 2^10 = 1024，远小于 LLM 的数万词汇量 |
+| Vocabulary（词汇表） | s1 或 s2 的所有可能令牌集合 | 大小为 2^10 = 1024（默认预训练配置 s1_bits=10, s2_bits=10），远小于 LLM 的数万词汇量；这些值可在自定义模型中调整 |
 
 ---
-**文档元信息**
-类型：参考文档 | 词条数：90+ | 更新日期：2026-04-12

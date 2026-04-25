@@ -127,9 +127,11 @@ for df_i, x_ts_i, y_ts_i in zip(df_list, x_ts_list, y_ts_list):
 `predict_batch` 内部调用 `generate()`，而 `generate()` 会将 `sample_count` 扩展到 batch 维度：
 
 ```python
-# auto_regressive_inference 中的维度扩展
-x = x.unsqueeze(1).repeat(1, sample_count, 1, 1)
-x = x.reshape(-1, x.size(1), x.size(2))  # (B*sample_count, seq_len, features)
+# auto_regressive_inference 中的维度扩展（源码 kronos.py:394）
+# 注意：这是一条链式语句，Python 先求值右侧表达式再赋值给 x
+# 因此 x.size(1) 和 x.size(2) 取的是 repeat 之前（原始）的维度
+x = x.unsqueeze(1).repeat(1, sample_count, 1, 1).reshape(-1, x.size(1), x.size(2))
+# 结果: (B*sample_count, seq_len, features)
 ```
 
 因此，`predict_batch(df_list=5, sample_count=3)` 的实际 batch 大小为 15。需注意 GPU 显存是否足够。
@@ -334,7 +336,3 @@ plt.show()
 - **工具**：[Web UI 使用指南](05-webui-guide.md) — 浏览器界面进行预测
 - **参考**：[模型选型指南](07-model-comparison.md) — 选择适合批量预测的模型规模
 
----
-**文档元信息**
-难度：⭐⭐⭐ | 类型：进阶指南 | 预计阅读时间：15 分钟
-更新日期：2026-04-11

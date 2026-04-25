@@ -170,6 +170,8 @@ sample_s1_ids = torch.multinomial(s1_probs.view(-1, vocab_s1), 1)
 sibling_embed = self.embedding.emb_s1(sample_s1_ids)
 x2 = self.dep_layer(x, sibling_embed)                 # DependencyAwareLayer
 s2_logits = self.head.cond_forward(x2)                # DualHead 的 proj_s2
+# 注：DependencyAwareLayer 内部的交叉注意力在训练时使用因果掩码（is_causal=True），
+# 推理时关闭因果掩码——详见 [Transformer 设计分析](../architecture/03-transformer-design.md)。
 ```
 
 **为什么 s2 要依赖 s1？** s1 捕捉了 K 线的主要走势方向。s2 在 s1 的基础上提供精细修正。如果 s2 独立于 s1 预测，可能产生不一致的结果（如 s1 预测大涨但 s2 预测小跌）。通过交叉注意力机制，s2 的预测能够"看到" s1 的结果并做出协调一致的决策。
@@ -330,10 +332,10 @@ import torch
 import torch.nn.functional as F
 from model.kronos import Kronos
 
-# 创建模型（使用默认参数）
+# 创建模型（使用 base 规模参数，演示用）
 model = Kronos(
     s1_bits=10, s2_bits=10, n_layers=12,
-    d_model=512, n_heads=8, ff_dim=1280,
+    d_model=832, n_heads=16, ff_dim=2048,
     ffn_dropout_p=0.1, attn_dropout_p=0.1,
     resid_dropout_p=0.1, token_dropout_p=0.1,
     learn_te=True
@@ -420,6 +422,3 @@ print(f"s2 平均熵: {s2_entropy.mean().item():.2f} bits (最大 {10.0})")
 - **相关**：[KronosPredictor 使用指南](04-predictor.md) ⭐⭐ — 模型推理的实际调用方式
 - **参考**：[源码走读](../architecture/04-source-code-walkthrough.md) ⭐⭐⭐⭐ — Kronos 类的逐行解读
 
----
-**文档元信息**
-难度：⭐⭐ | 类型：核心概念 | 更新日期：2026-04-11 | 预计阅读时间：20 分钟

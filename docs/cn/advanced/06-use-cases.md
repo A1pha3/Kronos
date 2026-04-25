@@ -110,13 +110,13 @@ model = Kronos.from_pretrained("NeoQuasar/Kronos-small")
 predictor = KronosPredictor(model, tokenizer, max_context=512)
 
 df = pd.read_csv("./examples/data/XSHG_5min_600977.csv")
-df['timestamps'] = pd.to_datetime(df['timestamps'])
+df['timestamps'] = pd.to_datetime(df['timestamps'])  # 必须转为 datetime 类型，否则 KronosPredictor 内部的 .dt 访问器会报错
 
 lookback = 400
 pred_len = 60
 
 x_df = df.loc[:lookback-1, ['open', 'high', 'low', 'close', 'volume', 'amount']]
-x_timestamp = df.loc[:lookback-1, 'timestamps']
+x_timestamp = df.loc[:lookback-1, 'timestamps']  # 此处 x_timestamp 已是 datetime 类型
 y_timestamp = df.loc[lookback:lookback+pred_len-1, 'timestamps']
 
 # 生成 10 条独立的预测路径
@@ -203,6 +203,8 @@ print(pred_df[['open', 'high', 'low', 'close']].head())
 
 **适用数据源**：Yahoo Finance（部分市场无成交量）、自采数据、模拟数据等。
 
+> **关于 amount 列**：如果数据有 `volume` 但没有 `amount`，KronosPredictor 会自动推算 `amount = volume * mean(open, high, low, close)`（逐行算术均价）。如果你有真实的成交额数据，建议手动添加 `amount` 列以获得更准确的预测。详见 [常见问题](../references/faq.md)。
+
 ---
 
 ## 场景 5：自定义时间粒度
@@ -280,9 +282,16 @@ def evaluate_prediction(x_df, pred_df):
     """基础预测质量检查"""
     issues = []
 
+    # 0. 输入保护：确保 x_df 有足够数据计算历史波动
+    if len(x_df) < 2:
+        issues.append("历史数据不足 2 行，无法计算波动对比")
+        return False
+
     # 1. 连续性检查：相邻K线不应出现极端跳变
     for col in ['open', 'high', 'low', 'close']:
         changes = pred_df[col].pct_change().dropna()
+        if len(changes) == 0:
+            continue
         max_change = changes.abs().max()
         if max_change > 0.3:  # 单步变化超过30%
             issues.append(f"{col} 单步最大变化 {max_change:.1%}，可能异常")
@@ -298,10 +307,13 @@ def evaluate_prediction(x_df, pred_df):
 
     # 3. 价格范围合理性
     last_close = x_df['close'].iloc[-1]
-    pred_range = (pred_df['close'].max() - pred_df['close'].min()) / last_close
-    hist_range = (x_df['close'].max() - x_df['close'].min()) / x_df['close'].iloc[-1]
-    if pred_range > hist_range * 3:
-        issues.append(f"预测波动幅度 ({pred_range:.1%}) 远大于历史波动 ({hist_range:.1%})")
+    if last_close == 0:
+        issues.append("最后一根K线收盘价为 0，无法计算相对波动")
+    else:
+        pred_range = (pred_df['close'].max() - pred_df['close'].min()) / abs(last_close)
+        hist_range = (x_df['close'].max() - x_df['close'].min()) / abs(x_df['close'].iloc[-1])
+        if hist_range > 0 and pred_range > hist_range * 3:
+            issues.append(f"预测波动幅度 ({pred_range:.1%}) 远大于历史波动 ({hist_range:.1%})")
 
     if not issues:
         print("基础检查通过：预测结果在合理范围内。")
@@ -390,6 +402,20 @@ else:
 | mini 与其他模型集成 | mini 使用 2048 上下文和不同的分词器（Tokenizer-2k），其 token 粒度与其他模型不同，直接平均预测值在语义上不对齐 |
 
 > **关键认知**：模型集成的前提是各个模型具有"独立的误差来源"。不同规模的 Kronos 模型共享相同的预训练数据，只是容量不同，因此集成的增益有限——不如增加单模型的采样次数来得经济。如果追求真正的多样性，建议结合 Kronos 预测与传统技术指标（如均线、MACD）进行多源信号集成。
+
+### 集成效果评估
+
+评估集成是否优于单模型时，建议关注以下指标：
+
+| 指标 | 计算方式 | 说明 |
+|------|---------|------|
+| MSE | `((pred - actual) ** 2).mean()` | 数值精度——集成通常小幅降低 MSE |
+| 方向准确率 | `(sign(pred_change) == sign(actual_change)).mean()` | 实用性核心——多模型方向一致时该指标提升明显 |
+| 预测稳定性 | 多次运行的预测标准差 | 集成天然更平滑，波动更小 |
+
+**何时集成有帮助**：当多个模型的方向判断一致时（如 small 和 base 均看涨），集成能提升方向准确率的置信度；在数据与预训练分布接近的主流市场（A 股、美股日线）上，集成对 MSE 的改善通常为边际提升（5%-15%）。
+
+**何时集成帮助不大**：当模型间方向分歧严重时，简单平均会稀释信号，效果不如选择其中置信度更高的单一模型；在小众市场或微调后的自定义模型上，不同模型的预测分布可能不对齐，集成反而引入噪声。
 
 ---
 
@@ -500,6 +526,67 @@ Kronos 预测结果
 
 ---
 
+## 动手练习
+
+### 练习 1：多场景模拟——观察不同采样路径的分歧程度
+
+使用同一组历史数据生成 20 条独立采样路径，计算收盘价在每一步的标准差，找出模型最不确定的时间步：
+
+```python
+import numpy as np
+import pandas as pd
+from model import Kronos, KronosTokenizer, KronosPredictor
+
+tokenizer = KronosTokenizer.from_pretrained("NeoQuasar/Kronos-Tokenizer-base")
+model = Kronos.from_pretrained("NeoQuasar/Kronos-small")
+predictor = KronosPredictor(model, tokenizer, max_context=512)
+
+df = pd.read_csv("./examples/data/XSHG_5min_600977.csv")
+df['timestamps'] = pd.to_datetime(df['timestamps'])
+
+lookback, pred_len = 400, 60
+x_df = df.loc[:lookback-1, ['open', 'high', 'low', 'close', 'volume', 'amount']]
+x_timestamp = df.loc[:lookback-1, 'timestamps']
+y_timestamp = df.loc[lookback:lookback+pred_len-1, 'timestamps']
+
+# 生成 20 条独立路径
+paths = []
+for _ in range(20):
+    pred = predictor.predict(df=x_df, x_timestamp=x_timestamp, y_timestamp=y_timestamp,
+                            pred_len=pred_len, T=1.0, top_p=0.9, sample_count=1, verbose=False)
+    paths.append(pred['close'].values)
+
+paths_array = np.array(paths)  # 形状: (20, pred_len)
+std_per_step = paths_array.std(axis=0)  # 每步标准差
+
+# 找出分歧最大的 5 个时间步
+top5_divergent = np.argsort(std_per_step)[-5:][::-1]
+for step in top5_divergent:
+    print(f"第 {step+1} 步: std={std_per_step[step]:.2f}, "
+          f"90% CI=[{np.percentile(paths_array[:, step], 5):.2f}, {np.percentile(paths_array[:, step], 95):.2f}]")
+```
+
+**验证方法**：如果输出的标准差在后期时间步明显增大，说明模型在远期预测中不确定性增加，与预期一致。关注分歧最大的时间步——这些位置可能对应模型遇到陌生模式的区域。
+
+### 练习 2：使用 evaluate_prediction 函数评估预测质量
+
+将本文"预测质量评估"一节中的 `evaluate_prediction` 函数应用于一次真实预测，解读各项指标的含义：
+
+```python
+# 使用练习 1 中的 predictor 和数据
+pred_df = predictor.predict(df=x_df, x_timestamp=x_timestamp, y_timestamp=y_timestamp,
+                           pred_len=pred_len, T=1.0, top_p=0.9, sample_count=5, verbose=True)
+
+# 调用质量评估函数（代码见本文"预测质量评估"一节）
+report = evaluate_prediction(pred_df, x_df)
+for key, value in report.items():
+    print(f"{key}: {value}")
+```
+
+**验证方法**：检查 `vol_ratio` 是否在 0.3-3.0 范围内（预测波动率与历史波动率相近）。如果 `vol_ratio` 远小于 0.3，说明预测过于平滑；如果远大于 3.0，说明预测波动异常剧烈。
+
+---
+
 ## 自测清单
 
 - [ ] 我能说出至少 3 种 Kronos 适合的使用场景
@@ -527,7 +614,3 @@ Kronos 预测结果
 - **进阶**：[CSV 微调指南](02-finetune-csv.md) — 适配特定市场数据
 - **参考**：[模型选型指南](07-model-comparison.md) — 不同模型规格对比
 
----
-**文档元信息**
-难度：⭐⭐ | 类型：实战案例 | 预计阅读时间：20 分钟
-更新日期：2026-04-11

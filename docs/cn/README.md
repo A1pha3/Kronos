@@ -2,7 +2,46 @@
 
 > Kronos 是一个面向金融蜡烛图（K 线）数据的开源基础模型，被 AAAI 2026 接收。根据仓库根目录 [README](../../README.md)，项目采用”分词器 + 自回归模型”的两阶段框架，并提供多种预训练模型与微调脚本。
 
-本文档体系覆盖从入门到源码分析的完整学习路径，共 24 篇文档，按难度从 1 星到 4 星递进。文档中的事实性描述以仓库中的 `README.md`、`model/`、`finetune/`、`finetune_csv/`、`webui/` 代码为准；凡是带有经验性建议的内容，均明确其适用边界，不把推测写成事实。所有行号引用基于源码实际位置，代码示例均可运行。
+本文档体系按难度从 ⭐ 到 ⭐⭐⭐⭐ 递进编排，覆盖从安装使用到源码分析的完整学习路径。事实性描述以仓库 `README.md` 及 `model/`、`finetune/`、`finetune_csv/`、`webui/` 源码为准；经验性建议均标注适用边界，不把推测写成事实。代码示例和行号引用均可追溯。
+
+## 学习目标
+
+完成本体系的学习后，你将能够：
+
+- 用 Kronos 对任意 OHLCV 数据完成单步和多步 K 线预测
+- 根据场景选择合适的模型规模和分词器搭配
+- 用自有数据（CSV 或 Qlib）微调模型以适配特定市场
+- 理解 BSQ 量化、层级令牌和自回归 Transformer 的设计动机与实现细节
+- 扩展 Kronos 的数据集、时间特征或模型架构以满足定制需求
+
+## 前置知识
+
+不同路径的起点要求不同：
+
+| 路径 | 最低要求 | 建议掌握 |
+|------|---------|---------|
+| 用户路径 | Python 基础、pandas DataFrame 操作 | 时间序列基本概念 |
+| 开发者路径 | PyTorch 基础、Transformer 基本结构 | HuggingFace Hub 模型加载 |
+| 进阶路径 | 线性代数、概率论基础 | 信息论（熵）、向量量化 |
+
+## 关键事实速查
+
+以下是 Kronos 最常被查询的技术事实，建议先浏览一遍再进入具体章节：
+
+| 事实 | 值 |
+|------|-----|
+| 输入数据列 | `open`, `high`, `low`, `close`（必填）, `volume`, `amount`（可选） |
+| 标准化方式 | 实例级 z-score + clip（默认 clip=5） |
+| 最大上下文 | small/base/large: 512, mini: 2048 |
+| 分词器搭配 | mini 使用 `Kronos-Tokenizer-2k`，其他使用 `Kronos-Tokenizer-base` |
+| 令牌维度 | s1_bits=10, s2_bits=10（已从各模型 config.json 验证确认） |
+| predict() 默认参数 | T=1.0, top_k=0, top_p=0.9, sample_count=1 |
+| 预训练市场 | 45+ 全球交易所 |
+| 模型 Hub 路径 | `NeoQuasar/Kronos-{mini,small,base,large}` |
+| 回归测试 | `pytest tests/test_kronos_regression.py` |
+| Web UI 启动 | `python webui/run.py`（端口 7070） |
+| 设备自动检测 | CUDA → MPS → CPU（无需手动配置） |
+| 时间特征 | minute, hour, weekday, day, month（5 个特征） |
 
 ---
 
@@ -10,7 +49,7 @@
 
 ### 用户路径：掌握 Kronos 的使用
 
-从安装配置到独立完成各类预测任务，适合希望使用 Kronos 进行金融预测的用户。
+从安装配置到独立完成预测、微调和模型选型。学完这条路径后，你可以对任意市场的 OHLCV 数据做出预测，并根据需要微调模型。
 
 | 文档 | 难度 | 内容 |
 |------|------|------|
@@ -59,6 +98,16 @@
 | 4 | [系统架构分析](architecture/01-system-architecture.md) | 从全局视角理解设计权衡 |
 | 5 | [源码走读](architecture/04-source-code-walkthrough.md) | 深入实现细节 |
 
+### 参考资源的阅读时机
+
+[术语表](references/glossary.md)、[常见问题](references/faq.md)和[错误排查](references/troubleshooting.md)不单独列入学习路径，但建议在以下时机查阅：
+
+| 参考文档 | 何时查阅 |
+|---------|---------|
+| [术语表](references/glossary.md) | 阅读中遇到不熟悉的术语时；跨文档术语翻译不一致时 |
+| [常见问题](references/faq.md) | 选型阶段（模型/参数选择）；准备微调前 |
+| [错误排查](references/troubleshooting.md) | 遇到报错时按关键词查找；微调训练不收敛时 |
+
 ---
 
 ## 快速入口
@@ -69,11 +118,11 @@
 |---------|---------|---------|
 | 快速体验 Kronos 预测 | [安装](getting-started/01-installation.md) → [快速开始](getting-started/02-quickstart.md) | 25 分钟 |
 | 用 Kronos 预测 A 股 | [快速开始](getting-started/02-quickstart.md) → [A 股实战](advanced/04-cn-markets.md) | 40 分钟 |
-| 选择合适的模型 | [模型对比与选型](advanced/07-model-comparison.md) | 10 分钟 |
-| 用自有数据微调 | [CSV 微调](advanced/02-finetune-csv.md) | 30 分钟 |
+| 选择合适的模型 | [模型对比与选型](advanced/07-model-comparison.md) — mini(4M/2048ctx) vs small(25M/512ctx) vs base(102M/512ctx) vs large(499M/512ctx) | 10 分钟 |
+| 用自有数据微调 | [CSV 微调](advanced/02-finetune-csv.md) — 准备 CSV → 配 YAML → 一条命令训练 | 30 分钟 |
 | 理解 Kronos 为什么这样设计 | [项目总览](core-concepts/01-overview.md) → [系统架构](architecture/01-system-architecture.md) | 45 分钟 |
-| 通过浏览器预测（不写代码） | [Web UI 指南](advanced/05-webui-guide.md) | 15 分钟 |
-| 解决报错 | [错误排查](references/troubleshooting.md) | 按需 |
+| 通过浏览器预测（不写代码） | [Web UI 指南](advanced/05-webui-guide.md) — `python webui/run.py` 即可 | 15 分钟 |
+| 解决报错 | [错误排查](references/troubleshooting.md) — 覆盖 OOM、NaN、维度不匹配等常见问题 | 按需 |
 
 ---
 
@@ -89,10 +138,18 @@
 
 ## 阅读建议
 
-- **纯用户**：按 ⭐ → ⭐⭐ → ⭐⭐⭐ 顺序阅读用户路径即可
-- **想微调模型**：完成 ⭐⭐ 级别后，直接进入对应的微调指南
-- **想理解原理**：完成 ⭐⭐ 级别后，阅读架构分析系列（⭐⭐⭐⭐）
-- **想贡献代码**：完成全部用户路径后，从源码走读（⭐⭐⭐⭐）开始
+- **纯用户**：按 ⭐ → ⭐⭐ → ⭐⭐⭐ 顺序阅读用户路径即可（约 2–3 小时）
+- **想微调模型**：完成 ⭐⭐ 级别后，直接进入对应的微调指南（[Qlib 微调](advanced/01-finetune-qlib.md) 或 [CSV 微调](advanced/02-finetune-csv.md)）
+- **想理解原理**：完成 ⭐⭐ 级别后，阅读架构分析系列（⭐⭐⭐⭐，约 3 小时）
+- **想贡献代码**：完成全部用户路径后，从[源码走读](architecture/04-source-code-walkthrough.md)（⭐⭐⭐⭐）开始
+
+### 如何验证学习成果
+
+| 完成路径 | 验证方式 |
+|---------|---------|
+| 用户路径 ⭐⭐ | 能独立用 `KronosPredictor.predict()` 跑出预测结果 |
+| 微调路径 ⭐⭐⭐ | 能在自有数据上完成一轮微调，loss 稳定下降 |
+| 原理路径 ⭐⭐⭐⭐ | 能解释 BSQ 量化与层级令牌的设计动机，并用源码佐证 |
 
 ---
 
@@ -104,24 +161,3 @@
 - **学习可递进**：重要文档尽量包含学习目标、阅读前提、常见误区和下一步阅读建议
 - **源码可追溯**：行号引用标注具体文件和行号（如 `kronos.py:270`），方便对照源码理解
 - **术语一致**：跨文档使用统一的中文译法，首次出现时标注英文原文
-
----
-
-## 关键事实速查
-
-以下是 Kronos 最常被查询的技术事实，供快速参考：
-
-| 事实 | 值 |
-|------|-----|
-| 输入数据列 | `open`, `high`, `low`, `close`（必填）, `volume`, `amount`（可选） |
-| 标准化方式 | 实例级 z-score + clip（默认 clip=5） |
-| 最大上下文 | small/base/large: 512, mini: 2048 |
-| 分词器搭配 | mini 使用 `Kronos-Tokenizer-2k`，其他使用 `Kronos-Tokenizer-base` |
-| 令牌维度 | s1_bits=10, s2_bits=10（所有预训练模型一致） |
-| predict() 默认参数 | T=1.0, top_k=0, top_p=0.9, sample_count=1 |
-| 预训练市场 | 45+ 全球交易所 |
-| 模型 Hub 路径 | `NeoQuasar/Kronos-{mini,small,base,large}` |
-| 回归测试 | `pytest tests/test_kronos_regression.py` |
-| Web UI 启动 | `python webui/run.py`（端口 7070） |
-| 设备自动检测 | CUDA → MPS → CPU（无需手动配置） |
-| 时间特征 | minute, hour, weekday, day, month（5 个特征） |

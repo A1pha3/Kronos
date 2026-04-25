@@ -106,7 +106,8 @@
 │   ├─ quant_embed: (1, N, d_model) → (1, N, 20)
 │   ├─ L2 normalize: 沿最后一维归一化到单位球面
 │   ├─ BSQ: (1, N, 20) → z_q ∈ {-1, +1}^20，经缩放后范数为 1
-│   └─ bits_to_indices: 切分并转换为 s1_ids (1, N, vocab_s1) + s2_ids (1, N, vocab_s2)
+│   └─ bits_to_indices: 切分并转换为 s1_ids (batch, seq_len) + s2_ids (batch, seq_len)
+│      注：s1_ids 中每个值 ∈ [0, 2^s1_bits)，s2_ids 中每个值 ∈ [0, 2^s2_bits)
 │
 │   注：若 BSQ 的所有维度恰好都量化到同一符号（极端情况下产生全零索引），
 │   模型仍可正常运行——全零索引（即索引 0）是合法的码本条目。
@@ -116,7 +117,8 @@
 ├─ 5. 自回归推理 [auto_regressive_inference()]
 │   │  维护滑动缓冲区: pre_buffer (B*sample_count, max_context)
 │   │                  + post_buffer (B*sample_count, max_context)
-│   │  注：Kronos-mini 使用 max_context=2048，其他型号默认 max_context=512
+│   │  注：Kronos-mini 使用 max_context=2048（该模型 config.json 中的配置值），
+│   │      其他型号默认 max_context=512。代码中 max_context 参数的默认值均为 512
 │   │  注：缓冲区固定为 max_context 大小，不论输入多长，内存占用恒定——
 │   │      这是滑动窗口防止 OOM 的关键机制。即使 pred_len=10000，
 │   │      每步推理的注意力矩阵大小也只取决于 max_context。
@@ -137,7 +139,7 @@
 │   │   │   ├─ emb_s1(s1_id) → sibling_embed 形状 (B, 1, d_model)
 │   │   │   ├─ DependencyAwareLayer(context, sibling_embed)
 │   │   │   │   └─ CrossAttention(query=(B,1,d_model), key=context, value=context)
-│   │   │   │      → 输出形状 (B, W, d_model)
+│   │   │   │      → 输出形状 (B, 1, d_model)
 │   │   │   └─ DualHead.proj_s2 → s2_logits (B, W, 1024)
 │   │   │   └─ 返回: s2_logits[:, -1, :] 形状 (B, 1024)
 │   │   │
@@ -280,6 +282,8 @@ finetune_csv/  (CSV 微调)
 
 两种流水线的核心训练逻辑相同（相同的损失函数、优化器、学习率调度器），区别在于数据加载和配置管理方式。
 
+> **编码器/解码器的实际层数**：图中标注的 "Encoder" 和 "Decoder" 实际包含 `n_enc_layers - 1` 和 `n_dec_layers - 1` 层 TransformerBlock（源码中使用 `range(n_enc_layers - 1)` 创建）。这是因为 `embed` 线性层承担了第一层的角色。例如，`n_enc_layers=4` 实际产生 3 个 Transformer 层。详见 [源码走读](04-source-code-walkthrough.md#kronostokenizer)。
+
 ---
 
 ## 模块修改影响矩阵
@@ -293,10 +297,12 @@ finetune_csv/  (CSV 微调)
 | 标准化方式 | KronosPredictor | predict_batch() 中的反标准化逻辑 | 改用 sliding-window 标准化 |
 | 时间特征 | TemporalEmbedding | predict() 中 calc_time_stamps()、所有数据集类 | 增加"季度"特征 |
 | 滑动窗口大小 | auto_regressive_inference | KronosPredictor 的 max_context 参数 | 增大到 1024 需更多内存 |
+| KronosPredictor 接口 | predict() / predict_batch() | Web UI (`webui/app.py`)、所有下游脚本 | 修改输入/输出格式 |
+| 设备管理逻辑 | KronosPredictor 构造函数 | 自定义推理管线 | 替换设备检测策略 |
 
 ---
 
-## 🧪 动手练习
+## 动手练习
 
 ### 练习 1：追踪一次预测的数据流
 
@@ -310,7 +316,7 @@ finetune_csv/  (CSV 微调)
 
 ---
 
-## ✅ 自测清单
+## 自测清单
 
 - [ ] 我能解释为什么 Kronos 使用"令牌化 + 自回归"而非直接回归
 - [ ] 我能说出实例级标准化的优势和代价
@@ -336,7 +342,7 @@ finetune_csv/  (CSV 微调)
 
 ## 性能瓶颈分析
 
-基于源码分析，Kronos 预测流水线中各步骤的时间占比（典型配置：Kronos-small, lookback=400, pred_len=120, CPU）：
+基于源码分析，Kronos 预测流水线中各步骤的时间占比（估算值，实际取决于硬件和数据；典型配置：Kronos-small, lookback=400, pred_len=120, CPU）：
 
 | 步骤 | 占比 | 说明 |
 |------|------|------|
@@ -363,7 +369,3 @@ finetune_csv/  (CSV 微调)
 - **前置**：[KronosPredictor 使用指南](../core-concepts/04-predictor.md) — 理解预测流水线
 - **进阶**：[开发扩展指南](../advanced/08-development-guide.md) — 基于架构理解进行二次开发
 
----
-
-**文档元信息**
-难度：⭐⭐⭐⭐ | 类型：专家设计 | 预计阅读时间：30 分钟 | 更新日期：2026-04-11

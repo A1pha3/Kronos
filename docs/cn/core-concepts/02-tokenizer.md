@@ -134,8 +134,8 @@ z = self.head(z)
 | `d_model` | 模型内部维度 | 256 |
 | `n_heads` | 注意力头数 | 4 |
 | `ff_dim` | 前馈网络维度 | 512 |
-| `n_enc_layers` | 编码器层数 | 4 |
-| `n_dec_layers` | 解码器层数（共享） | 4 |
+| `n_enc_layers` | 编码器配置层数（实际 Transformer 块 = n_enc_layers - 1） | 4（即 3 块） |
+| `n_dec_layers` | 解码器配置层数（实际 Transformer 块 = n_dec_layers - 1，共享） | 4（即 3 块） |
 | `s1_bits` | 粗粒度令牌的比特数 | 10 |
 | `s2_bits` | 细粒度令牌的比特数 | 10 |
 | `codebook_dim` | 码本维度 = `s1_bits + s2_bits` | 20 |
@@ -446,6 +446,8 @@ reconstructed = tokenizer.decode([s1_idx, s2_idx], half=True)
 print(f"重建形状: {reconstructed.shape}")  # 应为 (2, 16, 6)
 ```
 
+> **实践提示**：实际使用时无需手动构造分词器，应直接加载预训练权重：`tokenizer = KronosTokenizer.from_pretrained("NeoQuasar/Kronos-Tokenizer-base")`。上面展示的手动构造仅用于学习和理解架构参数的含义。
+
 ---
 
 ## 自测清单
@@ -484,6 +486,3 @@ print(f"重建形状: {reconstructed.shape}")  # 应为 (2, 16, 6)
 - **参考**：[术语表](../references/glossary.md) — 概念速查
 - **参考**：[源码走读](../architecture/04-source-code-walkthrough.md) ⭐⭐⭐⭐ — KronosTokenizer 源码逐行解读
 
----
-**文档元信息**
-难度：⭐⭐ | 类型：核心概念 | 更新日期：2026-04-11 | 预计阅读时间：15 分钟

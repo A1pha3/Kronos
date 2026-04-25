@@ -36,7 +36,7 @@ Kronos 要求输入数据至少包含以下四列，列名必须严格匹配：
 | 列名 | 类型 | 说明 | 缺失时的行为 |
 |------|------|------|-------------|
 | `volume` | float | 成交量 | 自动填充为 0 |
-| `amount` | float | 成交额 | 自动通过 `volume × 均价` 推算，或填充 0 |
+| `amount` | float | 成交额 | 自动通过 `volume × 均价` 推算（均价 = 逐行 mean(open, high, low, close)），或填充 0 |
 
 KronosPredictor 内部的处理逻辑（源码位于 `model/kronos.py` 的 `predict()` 方法中）：
 
@@ -230,7 +230,7 @@ x_df = df[['open', 'high', 'low', 'close']]
 
 ---
 
-## 🧪 动手练习
+## 动手练习
 
 ### 练习 1：验证你的数据格式
 
@@ -272,12 +272,12 @@ print("处理后 NaN 数量：", df_test['close'].isna().sum())
 
 ---
 
-## 你学到了什么
+## 要点回顾
 
-1. **数据格式**：至少需要 `open`、`high`、`low`、`close` 四列，`volume` 和 `amount` 可选
-2. **时间戳**：必须提供历史和未来的时间戳，模型从中提取时间特征
-3. **自动规范化**：KronosPredictor 内部完成标准化和反标准化，无需手动处理
-4. **数据质量**：输入数据中不能有 NaN，需要在传入前处理完毕
+- 至少需要 `open`、`high`、`low`、`close` 四列，`volume` 和 `amount` 可选
+- 时间戳用于提取时间特征（分钟、小时、星期、日、月），帮助模型捕捉周期性规律
+- KronosPredictor 内部自动完成实例级标准化和反标准化，无需手动处理
+- 输入数据中不能有 NaN——这是 KronosPredictor 的硬性检查，需要在传入前处理完毕
 
 ---
 
@@ -285,55 +285,11 @@ print("处理后 NaN 数量：", df_test['close'].isna().sum())
 
 ### Q: 如何验证数据质量？
 
-**A**: 可以使用以下快速验证脚本，对 DataFrame 进行全面检查：
-
-```python
-def validate_kronos_data(df):
-    """快速验证数据是否符合 Kronos 输入要求"""
-    issues = []
-
-    # 1. 检查必填列
-    for col in ['open', 'high', 'low', 'close']:
-        if col not in df.columns:
-            issues.append(f"缺少必填列：{col}")
-
-    # 2. 检查 NaN
-    price_cols = [c for c in ['open', 'high', 'low', 'close'] if c in df.columns]
-    nan_counts = df[price_cols].isnull().sum()
-    for col, cnt in nan_counts.items():
-        if cnt > 0:
-            issues.append(f"列 {col} 中有 {cnt} 个 NaN 值")
-
-    # 3. 检查零值（可能是停牌数据）
-    for col in price_cols:
-        zero_count = (df[col] == 0).sum()
-        if zero_count > 0:
-            issues.append(f"列 {col} 中有 {zero_count} 个零值（可能是停牌数据）")
-
-    # 4. 检查高低价逻辑
-    if all(c in df.columns for c in ['high', 'low']):
-        bad_hl = (df['high'] < df['low']).sum()
-        if bad_hl > 0:
-            issues.append(f"有 {bad_hl} 行的最高价低于最低价")
-
-    if issues:
-        print("发现以下数据问题：")
-        for i, issue in enumerate(issues, 1):
-            print(f"  {i}. {issue}")
-    else:
-        print("数据质量检查通过，未发现问题。")
-
-    return len(issues) == 0
-
-# 使用示例
-validate_kronos_data(df)
-```
-
-如果输出 `数据质量检查通过，未发现问题。`，说明你的数据已符合要求。
+**A**: 直接使用上方"练习 1"中的校验脚本即可快速检查必填列、NaN 和时间戳类型。如需更全面的检查（零值、高低价逻辑等），参考上面的"数据质量对预测的影响"表格逐一排查。
 
 ---
 
-## ✅ 自测清单
+## 自测清单
 
 - [ ] 我能解释 Kronos 对输入数据的必填列要求
 - [ ] 我能独立从 CSV 或 akshare 准备出符合格式的 DataFrame
@@ -357,7 +313,3 @@ validate_kronos_data(df)
 | [常见问题与故障排查](../references/troubleshooting.md) | 数据质量问题的诊断与修复方法 |
 | [KronosTokenizer 深度解析](../core-concepts/02-tokenizer.md) | 理解数据如何经过分词器编码为离散令牌 |
 | [KronosPredictor 使用指南](../core-concepts/04-predictor.md) | 预测参数详解，包括 `lookback`、`pred_len` 等配置 |
-
----
-**文档元信息**
-难度：⭐ | 类型：入门教程 | 预计阅读时间：10 分钟 | 最后更新：2026-04-11
