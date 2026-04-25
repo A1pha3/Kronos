@@ -184,7 +184,7 @@ for col in ['open', 'high', 'low', 'close']:
         print(f"{col}: {zero_count} 个零值, {neg_count} 个负值")
 ```
 
-### ValueError: amount 列值异常（有 volume 但 amount 被自动推算）
+### amount 列自动推算的注意事项（有 volume 但无 amount）
 
 **触发场景**：输入 DataFrame 有 `volume` 列但没有 `amount` 列时，KronosPredictor 自动推算 `amount = volume * mean(open, high, low, close)`（逐行算术均价）。如果 `volume` 与实际成交额差距大，可能影响预测质量。
 
@@ -414,31 +414,19 @@ for col in ['open', 'high', 'low', 'close']:
 
 **后处理修复**：
 
-```python
-import numpy as np
+推荐使用 pandas 向量化操作，速度远快于逐行迭代：
 
+```python
 def fix_ohlc_logic(pred_df):
-    """修复预测结果中的 OHLC 逻辑不一致"""
-    for i in range(len(pred_df)):
-        o, h, l, c = pred_df.at[i, 'open'], pred_df.at[i, 'high'], \
-                      pred_df.at[i, 'low'], pred_df.at[i, 'close']
-        # 确保 high >= max(open, close) 且 low <= min(open, close)
-        pred_df.at[i, 'high'] = max(h, o, c)
-        pred_df.at[i, 'low'] = min(l, o, c)
+    """修复预测结果中的 OHLC 逻辑不一致（向量化版本）"""
+    pred_df['high'] = pred_df[['high', 'open', 'close']].max(axis=1)
+    pred_df['low'] = pred_df[['low', 'open', 'close']].min(axis=1)
     return pred_df
 
 pred_df = fix_ohlc_logic(pred_df)
 ```
 
-> **性能提示**：上述 `fix_ohlc_logic` 逐行迭代，对于大量数据（如数万条预测）可能较慢。以下是使用 pandas 向量化操作的替代版本，可显著提升速度：
->
-> ```python
-> def fix_ohlc_logic_vectorized(pred_df):
->     """向量化版本：修复 OHLC 逻辑不一致"""
->     pred_df['high'] = pred_df[['high', 'open', 'close']].max(axis=1)
->     pred_df['low'] = pred_df[['low', 'open', 'close']].min(axis=1)
->     return pred_df
-> ```
+> **为什么用向量化？** 逐行迭代（`for i in range(len(pred_df))`）在数据量较大时（如数万条预测）性能很差。pandas 的 `max(axis=1)` / `min(axis=1)` 底层使用 NumPy C 扩展，通常快一到两个数量级。如果你的环境不支持 pandas 向量化操作，可以用 `df.at[i, 'high'] = max(h, o, c)` 逐行处理作为后备方案。
 
 ---
 

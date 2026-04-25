@@ -393,6 +393,15 @@ python finetune_csv/train_sequential.py --config config.yaml
 
 **验证方法**：检查 `outputs/test_experiment/` 目录下是否生成了 `tokenizer/best_model/` 和 `basemodel/best_model/` 目录，以及对应的日志文件。
 
+### 练习 2：分析训练日志判断收敛状态
+
+完成练习 1 后，打开 `outputs/test_experiment/logs/` 目录中的日志文件，完成以下分析：
+
+1. 在 `tokenizer_training_rank_0.log` 中，找到最后一个 epoch 的训练损失和验证损失，计算两者之比（训练损失/验证损失）。如果比值远大于 1，说明什么问题？
+2. 在 `basemodel_training_rank_0.log` 中，观察验证 CE 的变化趋势——是持续下降、先降后升、还是基本不变？每种趋势分别意味着什么？
+
+**验证方法**：对照本文"如何判断微调效果"和"过拟合的判断标准"两节的内容。训练损失远大于验证损失可能是因为训练损失包含了更多组件（如 bsq_loss）；验证 CE 先降后升是典型的过拟合信号，基本不变则说明模型可能没有充分学习。
+
 ---
 
 ## 自测清单

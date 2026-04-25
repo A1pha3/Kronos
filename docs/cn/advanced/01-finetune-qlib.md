@@ -424,6 +424,15 @@ torchrun --standalone --nproc_per_node=1 finetune/train_tokenizer.py
 
 **验证方法**：检查 `save_path/checkpoints/best_model/` 目录下是否生成了模型文件，并确认验证 MSE 在训练过程中逐步下降。
 
+### 练习 3：阅读源码理解损失计算
+
+打开 `finetune/train_tokenizer.py`，找到损失计算相关的代码（约第 130-160 行），回答以下问题：
+
+1. `recon_loss_pre` 和 `recon_loss_all` 分别使用了 `z_pre` 和 `z` 中的哪一个？它们分别对应粗粒度（仅 s1）和细粒度（s1+s2）的哪一级重建？
+2. 验证阶段（约第 180-182 行）只计算了哪个重建损失？为什么训练损失和验证损失不可直接比较？
+
+**验证方法**：对照本文"损失函数"一节中的代码片段确认你的理解。关键点是训练损失 = `(recon_loss_pre + recon_loss_all + bsq_loss) / 2`，而验证损失只用 `MSE(z, batch_x)`。
+
 ---
 
 ## 自测清单

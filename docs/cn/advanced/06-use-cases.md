@@ -570,7 +570,7 @@ for step in top5_divergent:
 
 ### 练习 2：使用 evaluate_prediction 函数评估预测质量
 
-将本文"预测质量评估"一节中的 `evaluate_prediction` 函数应用于一次真实预测，解读各项指标的含义：
+将本文"预测质量评估"一节中的 `evaluate_prediction` 函数应用于一次真实预测，解读各项检查的含义：
 
 ```python
 # 使用练习 1 中的 predictor 和数据
@@ -578,12 +578,12 @@ pred_df = predictor.predict(df=x_df, x_timestamp=x_timestamp, y_timestamp=y_time
                            pred_len=pred_len, T=1.0, top_p=0.9, sample_count=5, verbose=True)
 
 # 调用质量评估函数（代码见本文"预测质量评估"一节）
-report = evaluate_prediction(pred_df, x_df)
-for key, value in report.items():
-    print(f"{key}: {value}")
+# 注意参数顺序：先是历史数据 x_df，再是预测结果 pred_df
+passed = evaluate_prediction(x_df, pred_df)
+print(f"检查结果: {'通过' if passed else '存在问题'}")
 ```
 
-**验证方法**：检查 `vol_ratio` 是否在 0.3-3.0 范围内（预测波动率与历史波动率相近）。如果 `vol_ratio` 远小于 0.3，说明预测过于平滑；如果远大于 3.0，说明预测波动异常剧烈。
+**验证方法**：如果输出"基础检查通过：预测结果在合理范围内"，说明连续性、OHLC 逻辑和价格范围三项检查均通过。如果输出"发现以下问题"，根据具体提示定位原因——单步变化超过 30% 可能是温度过高，OHLC 违反逻辑是正常现象（可用 `fix_ohlc_logic` 修复），波动远大于历史则需降低 `T`。
 
 ---
 

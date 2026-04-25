@@ -308,6 +308,31 @@ plt.show()
 
 **验证方法**：确认生成了包含 5 个子图的 `batch_comparison.png`，每个子图都包含蓝色历史段和红色预测段，且 5 条序列的起始位置各不相同。
 
+### 练习 2：实现分批处理避免 OOM
+
+将练习 1 中的批量预测改写为分批处理版本——每次只处理 2 条序列，循环处理所有数据：
+
+```python
+batch_size = 2
+all_preds = []
+for i in range(0, len(dfs), batch_size):
+    batch_preds = predictor.predict_batch(
+        df_list=dfs[i:i+batch_size],
+        x_timestamp_list=xtsp[i:i+batch_size],
+        y_timestamp_list=ytsp[i:i+batch_size],
+        pred_len=pred_len,
+        sample_count=1,
+        verbose=True
+    )
+    all_preds.extend(batch_preds)
+```
+
+在此基础上做以下修改并观察效果：
+1. 将 `batch_size` 改为 1，比较总运行时间与 `batch_size=2` 的差异
+2. 将 `sample_count` 改为 3，观察单批次的显存占用变化
+
+**验证方法**：分批处理的结果数量应等于原始序列数（5 条）。对比 `batch_size=1` 和 `batch_size=2` 的结果应基本一致（允许采样带来的微小差异）。如果 GPU 显存允许，`sample_count=3` 的结果应比 `sample_count=1` 更稳定。
+
 ---
 
 ## 自测清单

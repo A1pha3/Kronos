@@ -276,6 +276,66 @@ for model_name in ["NeoQuasar/Kronos-small", "NeoQuasar/Kronos-base"]:
 
 ---
 
+## 动手练习
+
+### 练习 1：切换模型并验证配置
+
+使用项目自带的测试数据，分别加载 `Kronos-small` 和 `Kronos-base`，确认两者的 `model.config` 中 `d_model` 和 `n_layers` 的差异：
+
+```python
+from model import Kronos
+
+for name in ["NeoQuasar/Kronos-small", "NeoQuasar/Kronos-base"]:
+    model = Kronos.from_pretrained(name)
+    cfg = model.config if hasattr(model, 'config') else model.model.config
+    print(f"{name}: d_model={cfg.get('d_model')}, n_layers={cfg.get('n_layers')}, n_heads={cfg.get('n_heads')}")
+```
+
+**验证方法**：输出应与本文"架构参数对比"表中 small（d_model=512, n_layers=8, n_heads=8）和 base（d_model=832, n_layers=12, n_heads=16）的参数一致。
+
+### 练习 2：对比两个模型的预测路径
+
+使用测试数据，分别用 `Kronos-small` 和 `Kronos-base` 对同一时间段做预测（固定随机种子），对比路径间标准差：
+
+```python
+import numpy as np
+import torch
+import pandas as pd
+from model import Kronos, KronosTokenizer, KronosPredictor
+
+tokenizer = KronosTokenizer.from_pretrained("NeoQuasar/Kronos-Tokenizer-base")
+df = pd.read_csv("./examples/data/XSHG_5min_600977.csv")
+df['timestamps'] = pd.to_datetime(df['timestamps'])
+
+lookback = 200
+pred_len = 30
+x_df = df.loc[:lookback-1, ['open', 'high', 'low', 'close', 'volume', 'amount']]
+x_timestamp = df.loc[:lookback-1, 'timestamps']
+y_timestamp = df.loc[lookback:lookback+pred_len-1, 'timestamps']
+
+for model_name in ["NeoQuasar/Kronos-small", "NeoQuasar/Kronos-base"]:
+    model = Kronos.from_pretrained(model_name)
+    predictor = KronosPredictor(model, tokenizer, device="cpu", max_context=512)
+
+    paths = []
+    for seed in range(5):
+        torch.manual_seed(seed)
+        pred = predictor.predict(
+            df=x_df, x_timestamp=x_timestamp, y_timestamp=y_timestamp,
+            pred_len=pred_len, T=1.0, sample_count=1, verbose=False
+        )
+        paths.append(pred['close'].values)
+
+    paths = np.array(paths)
+    print(f"\n{model_name}:")
+    print(f"  预测终值均值: {paths[:, -1].mean():.2f}")
+    print(f"  路径间标准差均值: {paths.std(axis=0).mean():.4f}")
+```
+
+**验证方法**：两个模型都应产生合理的预测值（与输入数据的量级相近）。base 模型的路径间标准差可能更小（更稳定），也可能更准确——但重要的是确认两个模型都能正常加载和预测，没有分词器不匹配等错误。
+
+---
+
 ## 自测清单
 
 - [ ] 我能说出四个模型在参数量上的排序（mini: 4.1M < small: 24.7M < base: 102.3M < large: 499.2M）
