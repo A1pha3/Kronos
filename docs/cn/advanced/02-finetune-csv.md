@@ -5,11 +5,11 @@
 
 ### 学习目标
 
-以下内容讲解如何用通用 CSV 数据微调 Kronos：
+这篇讲解如何用通用 CSV 数据微调 Kronos：
 
-- [ ] 能创建 YAML 配置文件并使用 `train_sequential.py` 一键完成两阶段微调
+- [ ] 创建 YAML 配置文件并使用 `train_sequential.py` 一键完成两阶段微调
 - [ ] 理解 `CustomKlineDataset` 的数据加载逻辑及与 `SequentialTrainer` 的协作关系
-- [ ] 能根据数据特征决定是否需要微调分词器，并排查训练不收敛问题
+- [ ] 根据数据特征决定是否需要微调分词器，并排查训练不收敛问题
 
 ---
 
