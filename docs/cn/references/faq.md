@@ -149,10 +149,13 @@ results = [predictor.predict(df=d, x_timestamp=xt, y_timestamp=yt, pred_len=60)
 Kronos 将每个价格列独立预测，不保证 OHLC 之间的逻辑关系。可以使用后处理修复：
 
 ```python
-def fix_ohlc(df):
-    df['high'] = df[['high', 'open', 'close']].max(axis=1)
-    df['low'] = df[['low', 'open', 'close']].min(axis=1)
-    return df
+def fix_ohlc_logic(pred_df):
+    """修复预测结果中的 OHLC 逻辑不一致（向量化版本）"""
+    pred_df['high'] = pred_df[['high', 'open', 'close']].max(axis=1)
+    pred_df['low'] = pred_df[['low', 'open', 'close']].min(axis=1)
+    return pred_df
+
+pred_df = fix_ohlc_logic(pred_df)
 ```
 
 详见 [错误排查指南](troubleshooting.md)。
@@ -360,8 +363,6 @@ app.run(host='0.0.0.0', port=8080)  # 改为 8080
 
 ## 自测清单
 
-完成本 FAQ 阅读后，检查以下问题你是否能快速回答：
-
 - [ ] Kronos 预测结果每次不同是正常的吗？如何获得确定性结果？
 - [ ] 选择模型时，Kronos-mini 与其他模型在分词器和上下文长度上有什么区别？
 - [ ] `predict()` 和 `predict_batch()` 的输入要求有何不同？
@@ -369,4 +370,4 @@ app.run(host='0.0.0.0', port=8080)  # 改为 8080
 - [ ] 微调时是否必须重新训练分词器？什么情况下才需要？
 - [ ] 如何通过多次采样估计预测的不确定性？
 
-如果某个问题无法回答，请回到上方对应的章节。
+如果某个问题无法回答，回到上方对应的章节。

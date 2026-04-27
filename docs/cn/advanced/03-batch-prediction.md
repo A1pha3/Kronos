@@ -5,11 +5,12 @@
 
 ### 学习目标
 
-阅读本文后，你将能够：
+以下内容讲解批量预测的用法和约束：
 
-- [ ] 使用 `predict_batch()` 对多条时间序列进行批量预测
-- [ ] 理解批量预测的等长约束及其背后的张量堆叠机制
-- [ ] 根据显存和速度需求合理设置 batch 数量和 `sample_count`
+- [ ] 能使用 `predict_batch()` 对多条时间序列进行批量预测
+- [ ] 能解释批量预测的等长约束及其背后的张量堆叠机制
+- [ ] 能根据显存和速度需求合理设置 batch 数量和 `sample_count`
+- [ ] 能权衡 `predict()` 与 `predict_batch()` 的性能差异，选择适合当前场景的调用方式
 
 ---
 
@@ -80,7 +81,7 @@ for i, pred_df in enumerate(pred_dfs):
 
 **原因**：批量预测在内部将多条序列 stack 为一个三维张量 `(batch, seq_len, features)`，要求 `seq_len` 维度一致。
 
-**为什么这个约束是必要的？** 如果尝试将不同长度的序列 stack，PyTorch 会抛出维度不匹配错误。例如，一条长度为 400 的序列和一条长度为 300 的序列无法拼接为形状统一的张量——这就像试图将一个 400 列的表格和一个 300 列的表格按行合并，列数不同会导致对齐失败。
+**为什么这个约束是必要的？** 如果尝试将不同长度的序列 stack，PyTorch 会抛出维度不匹配错误。例如，一条长度为 400 的序列和一条长度为 300 的序列无法拼接为形状统一的张量——`seq_len` 维度不一致，`torch.stack()` 要求所有张量在每个维度上大小相同。
 
 ### 如果序列长度不同
 
@@ -181,6 +182,8 @@ x = x.unsqueeze(1).repeat(1, sample_count, 1, 1).reshape(-1, x.size(1), x.size(2
 
 ### 速度优化
 
+**CPU 环境参考**：在没有 GPU 的机器上，批量预测同样可以工作，但速度较慢。在 M1 MacBook（CPU 模式）上，使用 `Kronos-small` 对 10 条序列（`lookback=400`、`pred_len=120`、`sample_count=1`）进行批量预测约需 3-5 分钟。实测值取决于数据量和 CPU 性能，建议先用小批量（2-3 条）测试耗时，再按比例估算全量预测时间。
+
 ```python
 # 快速但不那么稳定
 pred_dfs = predictor.predict_batch(
@@ -261,28 +264,19 @@ for i in range(0, len(dfs), batch_size):
 
 ### 练习 1：预测 5 条不同时间窗口的数据并绘制对比图
 
-使用项目自带的测试数据，选取 5 个不同起始位置，批量预测后绘制对比图：
+使用项目自带的测试数据，选取 5 个不同起始位置，批量预测后绘制对比图。
+
+先按上文"基本用法"中的代码加载模型和数据，然后构建序列并预测：
 
 ```python
-from model import Kronos, KronosTokenizer, KronosPredictor
-import pandas as pd
-import matplotlib.pyplot as plt
-
-# 加载模型和数据
-tokenizer = KronosTokenizer.from_pretrained("NeoQuasar/Kronos-Tokenizer-base")
-model = Kronos.from_pretrained("NeoQuasar/Kronos-base")
-predictor = KronosPredictor(model, tokenizer, device="cpu", max_context=512)
-
-df = pd.read_csv("./examples/data/XSHG_5min_600977.csv")
-df['timestamps'] = pd.to_datetime(df['timestamps'])
-
+# 假设模型和数据已按"基本用法"一节加载完毕
 lookback = 200
 pred_len = 60
 
 # 构建不同起始位置的 5 条序列
 dfs, xtsp, ytsp = [], [], []
 for i in range(5):
-    start = i * 250  # 每条间隔 250 行，确保有重叠但不完全相同
+    start = i * 250
     end = start + lookback
     dfs.append(df.loc[start:end-1, ['open', 'high', 'low', 'close', 'volume', 'amount']])
     xtsp.append(df.loc[start:end-1, 'timestamps'])
@@ -336,8 +330,6 @@ for i in range(0, len(dfs), batch_size):
 ---
 
 ## 自测清单
-
-完成本指南后，检查你是否掌握了以下要点：
 
 - [ ] 能解释为什么批量预测要求所有序列的历史长度一致
 - [ ] 知道 `sample_count` 参数如何影响实际 batch 大小（batch 数 * sample_count）

@@ -4,29 +4,29 @@
 > **预计时间**：10 分钟
 > **前置要求**：具备基本的命令行操作能力
 
+> **三步安装摘要**：① `git clone https://github.com/shiyu-coder/Kronos.git && cd Kronos` ② `pip install -r requirements.txt` ③ 运行 `python -c "from model import KronosPredictor"` 验证。以下展开详细步骤。
+
 ---
 
 ## 学习目标
 
-完成本教程后，你将能够：
+装完之后你应该能做这三件事：
 
-- [ ] 在本地搭建 Kronos 运行环境
-- [ ] 理解各依赖库的作用
-- [ ] 验证环境是否配置成功
+- [ ] 本地环境正常导入 Kronos 模块
+- [ ] 说清楚 torch、pandas、einops 等核心依赖各自负责什么
+- [ ] 运行验证脚本确认安装无误，判断自己的设备类型
 
 ---
 
 ## Kronos 是什么
 
-Kronos 是首个面向金融 K 线数据的开源基础模型，被 AAAI 2026 接收。它将 K 线预测转化为"语言建模"问题：先把 OHLCV 数据离散化为令牌，再用 Transformer 预测未来的令牌序列。Kronos 专为金融蜡烛图设计，在 45+ 个全球交易所数据上预训练，开箱即用。关于其架构原理的完整介绍，参见 [项目总览与核心概念](../core-concepts/01-overview.md)。
+Kronos 是首个面向金融 K 线数据的开源基础模型，被 AAAI 2026 接收。它将 K 线预测转化为"语言建模"问题：先把 OHLCV 数据离散化为令牌，再用 Transformer 预测未来的令牌序列。在 45+ 个全球交易所数据上预训练，开箱即用。
 
-### 一句话理解
+> **一句话理解**：用 Kronos 预测 K 线，就像用 GPT 生成文本一样——输入历史行情，输出未来走势。
 
-Kronos 把金融 K 线预测转化为"语言建模"问题——先用分词器将 OHLCV 数据离散化为令牌，再用 Transformer 预测未来令牌序列。这意味着你可以像用语言模型生成文本一样，生成未来 K 线的走势。
+> **分词器搭配**：`Kronos-mini` 使用 `Kronos-Tokenizer-2k`（上下文 2048）；其余模型使用 `Kronos-Tokenizer-base`（上下文 512）。详见 [模型对比与选型](../advanced/07-model-comparison.md)。
 
-> **分词器选择提示**：不同规模的 Kronos 模型搭配不同的分词器。`Kronos-mini` 使用专用分词器 `Kronos-Tokenizer-2k`，支持最长 2048 的上下文长度；其余模型（`Kronos-small`、`Kronos-base`、`Kronos-large`）均使用 `Kronos-Tokenizer-base`，上下文长度为 512。详见 [模型对比与选型](../advanced/07-model-comparison.md)。
-
-> **与传统方法有何不同？** 传统模型（LSTM、ARIMA）直接在连续数值空间做回归，需要为每个市场单独训练。Kronos 在 45+ 个全球交易所数据上预训练，支持温度采样、核采样等可控生成策略，并内置 `TemporalEmbedding` 捕捉周期性——统一模型即可适配股票、期货、加密货币。完整对比见 [项目总览与核心概念](../core-concepts/01-overview.md)。
+架构原理的完整介绍，参见 [项目总览与核心概念](../core-concepts/01-overview.md)。
 
 ---
 
@@ -77,7 +77,7 @@ conda activate kronos-env
 ### 步骤 1：克隆仓库
 
 ```bash
-git clone https://github.com/NeoQuasar/Kronos.git
+git clone https://github.com/shiyu-coder/Kronos.git
 cd Kronos
 ```
 
@@ -89,7 +89,7 @@ pip install -r requirements.txt
 
 核心依赖清单与作用说明（版本号为 `requirements.txt` 中的锁定值，`torch` 为最低版本要求）：
 
-> **关于 requirements.txt 的结构**：该文件中 `numpy` 和 `pandas` 各出现两次——首次无版本约束（作为兼容性声明），末尾的 `pandas==2.2.2` 为实际生效的锁定版本，`numpy` 则始终不锁定版本。安装时 pip 以最后一条匹配的记录为准。
+> **关于 requirements.txt 的结构**：该文件中 `pandas` 出现两次——首次无版本约束（作为兼容性声明），末尾的 `pandas==2.2.2` 为实际生效的锁定版本。`numpy` 只出现一次且不锁定版本。安装时 pip 以最后一条匹配的记录为准。
 
 | 包名 | 版本 | 作用 |
 |------|------|------|
@@ -138,7 +138,6 @@ pip install akshare
 import torch
 import numpy as np
 import pandas as pd
-from huggingface_hub import PyTorchModelHubMixin
 
 print(f"PyTorch 版本: {torch.__version__}")
 print(f"CUDA 可用: {torch.cuda.is_available()}")
@@ -181,39 +180,78 @@ print("OK")
 
 ## 自测检查
 
-完成安装后，用以下清单确认环境就绪：
+跑一遍下面的命令，三项全过就可以进入 [快速开始](02-quickstart.md) 了：
 
 - [ ] `python -c "import torch; print(torch.__version__)"` 正常输出版本号
 - [ ] `python -c "from model import KronosPredictor"` 无报错
-- [ ] 确认你的计算设备类型（CPU / CUDA / MPS），与上一步验证脚本的输出一致
+- [ ] 计算设备类型（CPU / CUDA / MPS）与验证脚本输出一致
 
-如果以上三项均通过，可以继续 [快速开始：第一个预测](02-quickstart.md)。
+如果某一项没过：`import torch` 报错说明 PyTorch 未安装或版本不匹配，参考 [PyTorch 官网](https://pytorch.org/get-started/locally/) 重新安装；`from model import ...` 报错通常是因为当前目录不是仓库根目录；设备检测不符预期的话，详见 [常见错误排查](../references/troubleshooting.md)。
 
-> **某一项没通过？** 快速排查：
-> - `import torch` 报错 → PyTorch 未安装或版本不匹配，参考 [PyTorch 官网](https://pytorch.org/get-started/locally/) 重新安装
-> - `from model import ...` 报错 → 确认当前目录是 Kronos 仓库根目录，或已将仓库路径加入 `PYTHONPATH`
-> - 设备检测不符预期 → 详见 [常见错误排查](../references/troubleshooting.md)
+---
+
+## 动手练习
+
+### 练习 1：在虚拟环境中完成完整的环境搭建
+
+从零开始，在一个新建的虚拟环境中完成全部安装步骤：
+
+```bash
+# 1. 创建并激活虚拟环境
+python -m venv kronos-env
+source kronos-env/bin/activate
+
+# 2. 克隆仓库并安装依赖
+git clone https://github.com/shiyu-coder/Kronos.git
+cd Kronos
+pip install -r requirements.txt
+
+# 3. 运行验证脚本（复制上文"快速验证脚本"中的代码）
+python -c "import torch, numpy, pandas; print('OK')"
+```
+
+**验证方法**：在虚拟环境中运行 `python -c "from model import KronosPredictor"` 无报错，说明环境搭建成功。完成后可通过 `deactivate` 退出虚拟环境。
+
+> **为什么要用虚拟环境？** Python 的包管理器 pip 是全局安装的——如果你同时维护两个项目，一个需要 `numpy>=2.0`，另一个依赖 `numpy<2.0`，直接安装会互相覆盖。虚拟环境为每个项目创建独立的包目录，从根本上杜绝这类冲突。
+
+### 练习 2：对比 CPU 和 GPU 环境下的模型加载速度
+
+如果你有 GPU（CUDA 或 MPS），可以用 `time` 模块测量不同设备上 `from_pretrained()` 的耗时差异：
+
+```python
+import time, torch
+
+device = "cuda:0" if torch.cuda.is_available() else (
+    "mps" if hasattr(torch.backends, "mps") and torch.backends.mps.is_available() else "cpu"
+)
+
+from model import Kronos, KronosTokenizer
+
+# 测量模型加载 + 推理准备耗时
+start = time.time()
+tokenizer = KronosTokenizer.from_pretrained("NeoQuasar/Kronos-Tokenizer-base")
+model = Kronos.from_pretrained("NeoQuasar/Kronos-base")
+elapsed = time.time() - start
+print(f"设备: {device}，加载耗时: {elapsed:.2f}s")
+```
+
+**验证方法**：分别记录 CPU 和 GPU（如果可用）的加载时间。首次运行包含模型下载时间，后续运行只反映纯粹的加载耗时。GPU 加载通常不会更快（瓶颈在磁盘 I/O），但后续推理速度会有显著差异。
 
 ---
 
 ## 常见问题
 
-### Q: `pip install` 报错，提示 torch 安装失败？
+### Q: pip install 报错，提示 torch 安装失败？
 
-**A**: PyTorch 需要根据你的操作系统和 CUDA 版本选择正确的安装包。访问 [PyTorch 官网](https://pytorch.org/get-started/locally/) 获取适合你系统的安装命令，先单独安装 PyTorch，再安装其他依赖。详见 [常见问题与故障排查](../references/troubleshooting.md)。
+PyTorch 需要根据操作系统和 CUDA 版本选择对应的安装包。先到 [PyTorch 官网](https://pytorch.org/get-started/locally/) 拿到适合你系统的安装命令，单独安装 PyTorch 后再装其余依赖。详见 [常见问题与故障排查](../references/troubleshooting.md)。
 
 ### Q: 模型下载速度慢或超时？
 
-**A**: 预训练模型托管在 HuggingFace Hub 上。如果网络访问不稳定，可以：
-
-1. 设置 `HF_ENDPOINT` 环境变量使用镜像站
-2. 手动从 HuggingFace 下载模型文件到本地，然后使用本地路径加载
-
-关于各模型的下载地址与分词器搭配，详见 [常见问题](../references/faq.md) 和 [模型对比与选型](../advanced/07-model-comparison.md)。
+预训练模型托管在 HuggingFace Hub 上，网络不稳定时可以：（1）设置 `HF_ENDPOINT` 环境变量使用镜像站；（2）手动下载模型文件到本地后用本地路径加载。各模型的下载地址与分词器搭配见 [常见问题](../references/faq.md) 和 [模型对比与选型](../advanced/07-model-comparison.md)。
 
 ### Q: Mac 上能否使用 GPU 加速？
 
-**A**: Apple Silicon Mac（M1/M2/M3/M4）支持 MPS 后端。KronosPredictor 会自动检测并使用 MPS 设备。Intel Mac 只能使用 CPU。更多设备与性能问题，详见 [常见问题与故障排查](../references/troubleshooting.md)。
+Apple Silicon Mac（M1/M2/M3/M4）支持 MPS 后端，KronosPredictor 会自动检测并使用。Intel Mac 只能用 CPU。更多设备与性能问题见 [故障排查](../references/troubleshooting.md)。
 
 ---
 

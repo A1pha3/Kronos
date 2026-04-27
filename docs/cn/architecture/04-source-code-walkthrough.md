@@ -6,12 +6,12 @@
 
 ## 学习目标
 
-完成本文后，你将能够：
+以下内容逐模块解读 Kronos 核心源码的设计意图：
 
-- [ ] 在源码中定位任意模块的实现并解释其设计意图
-- [ ] 追踪 `auto_regressive_inference()` 中的滑动窗口缓冲区管理逻辑
-- [ ] 解释直通估计器、共享解码器、DependencyAwareLayer 残差方向等容易忽略的实现细节
-- [ ] 识别可复用的代码模式（Mixin、STE、滑动窗口推理、多采样并行）
+- [ ] 能在源码中定位任意模块的实现并解释其设计意图
+- [ ] 能追踪 `auto_regressive_inference()` 中的滑动窗口缓冲区管理逻辑
+- [ ] 能解释直通估计器、共享解码器、DependencyAwareLayer 残差方向等容易忽略的实现细节
+- [ ] 能识别可复用的代码模式（Mixin、STE、滑动窗口推理、多采样并行）
 
 ---
 
@@ -271,7 +271,7 @@ def __init__(self, d_in, d_model, ...):
     self.head = nn.Linear(d_model, d_in)            # d_model → 6
 ```
 
-**注意编码器层数为 `n_enc_layers - 1`**：这是因为在 BSQ 论文的实现中，第一层被 `embed` 线性层替代。`n_enc_layers=4` 实际意味着 3 个 Transformer 层 + 1 个线性层。
+**注意编码器层数为 `n_enc_layers - 1`**：这是源码中的设计选择——`self.embed` 线性层负责从 `d_in`（6）到 `d_model` 的映射，随后 `n_enc_layers - 1` 层 Transformer 块进一步提取特征。`n_enc_layers=4` 实际意味着 1 个线性映射层 + 3 个 Transformer 块。这种 "-1" 的设计使得配置参数 `n_enc_layers` 的含义更直观（包含线性映射层的"总层数"），但实际 Transformer 块数量比配置值少 1。
 
 **forward()**：
 
@@ -301,9 +301,9 @@ def forward(self, x):
 
 ### Kronos
 
-**文件位置**：`kronos.py:198-328`
+**文件位置**：`kronos.py:180-328`
 
-**构造函数** `kronos.py:198-224`：
+**构造函数** `kronos.py:180-237`：
 
 ```python
 def __init__(self, s1_bits, s2_bits, n_layers, d_model, n_heads, ff_dim, ...):
@@ -333,10 +333,10 @@ def forward(self, s1_ids, s2_ids, stamp=None, padding_mask=None,
     for layer in self.transformer: x = layer(x, key_padding_mask=padding_mask)
     x = self.norm(x)                             # 最终 RMSNorm
 
-    # s1 预测（kronos.py:263）
+    # s1 预测（kronos.py:265）
     s1_logits = self.head(x)                     # DualHead.forward() → proj_s1
 
-    # s2 条件预测（kronos.py:265-275）
+    # s2 条件预测（kronos.py:267-275）
     if use_teacher_forcing:
         sibling_embed = self.embedding.emb_s1(s1_targets)    # 训练：用真实 s1
     else:
@@ -352,7 +352,7 @@ def forward(self, s1_ids, s2_ids, stamp=None, padding_mask=None,
 
 **token_drop**：在嵌入后应用 Dropout。在训练中随机将某些令牌的嵌入置零，迫使模型不依赖任何单个令牌，增强鲁棒性。
 
-> **注意**：`decode_s1()` 和 `decode_s2()` 中也包含 `self.token_drop(x)` 调用。由于推理时这些方法是在 `model.eval()` + `torch.no_grad()` 下执行的，Dropout 层不会实际丢弃令牌（`eval()` 模式下 Dropout 是恒等操作）。但如果推理前忘记调用 `model.eval()`，`token_drop` 会导致预测结果不可复现。`auto_regressive_inference()` 使用 `torch.no_grad()` 但没有显式调用 `model.eval()`——`KronosPredictor.generate()` 也没有调用。这意味着如果模型之前处于训练模式，推理结果会是不确定的。正常使用场景中不会出现这个问题（`from_pretrained` 加载的模型默认是 eval 模式），但在自定义训练-推理交替的流程中需要留意。
+> **注意**：`decode_s1()` 中包含 `self.token_drop(x)` 调用（`kronos.py:300`），而 `decode_s2()` 不包含 Dropout。由于推理时这些方法是在 `model.eval()` + `torch.no_grad()` 下执行的，Dropout 层不会实际丢弃令牌（`eval()` 模式下 Dropout 是恒等操作）。但如果推理前忘记调用 `model.eval()`，`decode_s1()` 中的 `token_drop` 会导致预测结果不可复现。`auto_regressive_inference()` 使用 `torch.no_grad()` 但没有显式调用 `model.eval()`——`KronosPredictor.generate()` 也没有调用。这意味着如果模型之前处于训练模式，推理结果会是不确定的。正常使用场景中不会出现这个问题（`from_pretrained` 加载的模型默认是 eval 模式），但在自定义训练-推理交替的流程中需要留意。
 
 ---
 
@@ -457,18 +457,26 @@ def auto_regressive_inference(tokenizer, model, x, x_stamp, y_stamp,
 
 ### KronosPredictor
 
-**文件位置**：`kronos.py:484-661`
+**文件位置**：`kronos.py:482-661`
 
-**构造函数** `kronos.py:484-506`：
+**构造函数** `kronos.py:482-506`：
 
 ```python
-def __init__(self, model, tokenizer, device=None, max_context=512, clip=5.0):
+def __init__(self, model, tokenizer, device=None, max_context=512, clip=5):
     self.model = model
     self.tokenizer = tokenizer
     self.max_context = max_context
     self.clip = clip
     # 设备自动检测：CUDA → MPS → CPU
-    self.device = device or self._detect_device()
+    # 设备自动检测：CUDA → MPS → CPU（内联判断，非独立方法）
+    if device is None:
+        if torch.cuda.is_available():
+            device = "cuda:0"
+        elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+            device = "mps"
+        else:
+            device = "cpu"
+    self.device = device
     self.price_cols = ['open', 'high', 'low', 'close']
     self.vol_col = 'volume'
     self.amt_vol = 'amount'
@@ -594,11 +602,11 @@ def get_model_class(model_name):
 
 ## 自测清单
 
-- [ ] 我能在源码中定位 BSQ 量化的三行核心代码（二值化、直通、缩放）
-- [ ] 我能解释 `KronosTokenizer.forward()` 为什么解码器被遍历两次（共享解码器）
-- [ ] 我能说明 `auto_regressive_inference()` 中 `torch.roll` 的触发条件
-- [ ] 我能解释 `DependencyAwareLayer` 中残差连接方向是 `hidden_states + attn_out` 而非 `sibling_embed + attn_out`
-- [ ] 我能说出 `KronosPredictor.predict_batch()` 中每条序列独立反标准化的原因
+- [ ] 能在源码中定位 BSQ 量化的三行核心代码（二值化、直通、缩放）
+- [ ] 能解释 `KronosTokenizer.forward()` 为什么解码器被遍历两次（共享解码器）
+- [ ] 能说明 `auto_regressive_inference()` 中 `torch.roll` 的触发条件
+- [ ] 能解释 `DependencyAwareLayer` 中残差连接方向是 `hidden_states + attn_out` 而非 `sibling_embed + attn_out`
+- [ ] 能说出 `KronosPredictor.predict_batch()` 中每条序列独立反标准化的原因
 
 ---
 

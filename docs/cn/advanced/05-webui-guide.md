@@ -7,11 +7,11 @@
 
 ## 学习目标
 
-阅读本文后，你将能够：
+以下内容覆盖 Web UI 的安装、启动、API 端点和常见问题：
 
-- [ ] 启动 Kronos Web 界面并通过浏览器进行 K 线预测
+- [ ] 能启动 Kronos Web 界面并通过浏览器进行 K 线预测
 - [ ] 理解 Web UI 的数据加载、模型选择和预测参数配置流程
-- [ ] 排查 Web UI 启动和使用中的常见问题
+- [ ] 能排查 Web UI 启动和使用中的常见问题
 
 ---
 
@@ -488,44 +488,50 @@ pip install -r webui/requirements.txt
 
 ### 练习 3：通过 API 端点获取预测结果
 
-不使用浏览器界面，直接用 Python 调用 `/predict` API 端点，验证 Web UI 的 API 层独立可用：
+不使用浏览器界面，直接用 Python 调用 API 端点，验证 Web UI 的 API 层独立可用：
 
 ```python
 import requests
 import json
 
 # 确认 Web UI 正在运行
-resp = requests.get("http://localhost:7070/models")
+resp = requests.get("http://localhost:7070/api/available-models")
 print("可用模型:", resp.json())
 
 # 获取数据文件列表
-resp = requests.get("http://localhost:7070/data_files")
+resp = requests.get("http://localhost:7070/api/data-files")
 print("数据文件:", resp.json())
 
-# 执行预测
-payload = {
-    "model_name": "Kronos-small",
-    "data_file": "XSHG_5min_600977.csv",
+# 执行预测（需要先加载数据和模型）
+# 步骤 1：加载数据文件
+resp = requests.post("http://localhost:7070/api/load-data", json={"data_file": "XSHG_5min_600977.csv"})
+print("数据加载:", resp.json())
+
+# 步骤 2：加载模型
+resp = requests.post("http://localhost:7070/api/load-model", json={"model_name": "Kronos-small"})
+print("模型加载:", resp.json())
+
+# 步骤 3：执行预测
+resp = requests.post("http://localhost:7070/api/predict", json={
     "lookback": 200,
     "pred_len": 60,
     "temperature": 1.0
-}
-resp = requests.post("http://localhost:7070/predict", json=payload)
+})
 result = resp.json()
-print("预测状态:", result.get("status", "unknown"))
+print("预测状态:", result.get("status", result.get("error", "unknown")))
 ```
 
-**验证方法**：如果 `models` 和 `data_files` 端点正常返回列表，且 `predict` 端点返回 `status: success`，说明 API 层工作正常。如果返回 500 错误，检查数据文件路径是否在正确的 `data/` 目录下。
+**验证方法**：如果三个步骤依次返回成功响应，说明 API 层完整可用。如果返回 500 错误，检查数据文件路径是否在正确的 `data/` 目录下，以及模型是否加载成功（调用 `GET /api/model-status` 确认）。
 
 ---
 
 ## 自测清单
 
-- [ ] 我能独立启动 Web UI 并在浏览器中访问
-- [ ] 我能说明 Web UI 的 6 个 API 端点及其功能
-- [ ] 我知道如何更换端口号和指定 GPU 设备
-- [ ] 我能解释数据文件需要满足的格式要求
-- [ ] 我知道预测结果保存在哪里以及包含什么内容
+- [ ] 能独立启动 Web UI 并在浏览器中访问
+- [ ] 能说明 Web UI 的 6 个 API 端点及其功能
+- [ ] 知道如何更换端口号和指定 GPU 设备
+- [ ] 能解释数据文件需要满足的格式要求
+- [ ] 知道预测结果保存在哪里以及包含什么内容
 
 ---
 

@@ -4,11 +4,11 @@
 
 ### 学习目标
 
-阅读本文后，你将能够：
+这份术语表是阅读其他文档时的参考手册。熟悉后：
 
-- [ ] 准确解释 BSQ、层级令牌、依赖感知层等 Kronos 核心概念
-- [ ] 区分容易混淆的术语（如 Kronos 分词器 vs NLP 分词器、Decoder 在不同语境下的含义）
-- [ ] 快速定位任意术语的详细文档出处
+- [ ] 能准确解释 BSQ、层级令牌、依赖感知层等 Kronos 核心概念
+- [ ] 能区分容易混淆的术语（如 Kronos 分词器 vs NLP 分词器、Decoder 在不同语境下的含义）
+- [ ] 能快速定位任意术语的详细文档出处
 
 ---
 
@@ -65,6 +65,8 @@
 | 实例级标准化 | Instance-Level Normalization | 对每条预测序列独立计算均值和标准差的 z-score 标准化方法，是 KronosPredictor 的默认行为。详见"数据相关"分组 |
 | z-score 标准化 | Z-Score Normalization | (x - mean) / std，将数据变换为零均值单位方差 |
 | 码本塌缩 | Codebook Collapse | 量化器中大部分码字从未被使用的现象，模型只集中使用极少数码字，导致表达能力严重浪费。BSQ 通过熵正则化天然避免此问题。参见"熵正则化" |
+| 大端序 / 小端序 | Big-Endian / Little-Endian | 索引计算中二值位到整数的映射方式。Kronos 中 `BinarySphericalQuantizer.codes_to_indexes()` 使用大端序（高位在前），`BSQuantizer.bits_to_indices()` 使用小端序（低位在前）。详见 [BSQ 量化算法原理](../architecture/02-bsq-algorithm.md) |
+| 令牌 Dropout | Token Dropout | 训练时以 `token_dropout_p` 概率将令牌嵌入置零的正则化手段，防止模型过度依赖特定令牌位置 |
 | 置信区间 | Confidence Interval | 通过多次采样预测结果计算的概率区间（如 p5-p95），用于量化预测的不确定性 |
 | 蒙特卡洛采样 | Monte Carlo Sampling | 通过多次随机采样估计概率分布特征的方法。Kronos 中通过 `sample_count > 1` 实现多条独立预测路径 |
 
@@ -214,8 +216,6 @@
 ---
 
 ## 自测清单
-
-完成本术语表的学习后，检查你是否掌握了以下要点：
 
 - [ ] 能解释 BSQ 如何将连续向量量化为离散令牌
 - [ ] 能区分 s1 令牌和 s2 令牌的角色（粗粒度 vs 细粒度）

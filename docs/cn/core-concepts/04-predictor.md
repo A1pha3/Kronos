@@ -7,7 +7,7 @@
 
 ## 学习目标
 
-阅读本文档后，你将能够：
+这篇覆盖 `KronosPredictor` 的全部功能和参数：
 
 - [ ] 说明 `KronosPredictor` 的完整预测流水线（从原始数据到预测结果）
 - [ ] 正确设置 `T`、`top_p`、`sample_count` 等采样参数并理解其对结果的影响
@@ -18,13 +18,9 @@
 
 ## 概念定义
 
-### 一句话定义
-
 **KronosPredictor** 是 Kronos 的高层预测接口，将"数据预处理 → 分词编码 → 自回归推理 → 解码还原 → 后处理"的完整流程封装为 `predict()` 和 `predict_batch()` 两个方法。
 
-### 为什么需要 KronosPredictor？
-
-直接使用 KronosTokenizer + Kronos 进行预测需要手动处理大量细节：标准化、时间特征提取、令牌缓冲区管理、采样、反标准化等。KronosPredictor 将这些步骤封装起来，让用户只需关心输入数据和预测参数。
+直接使用 KronosTokenizer + Kronos 进行预测需要手动处理大量细节：标准化、时间特征提取、令牌缓冲区管理、采样、反标准化等。KronosPredictor 把这些步骤封装起来，用户只需关心输入数据和预测参数。
 
 ---
 
@@ -41,7 +37,7 @@ predictor = KronosPredictor(
     tokenizer,          # KronosTokenizer 分词器（必填）
     device=None,        # 计算设备（可选，自动检测）
     max_context=512,    # 最大上下文窗口长度
-    clip=5.0            # 标准化后的裁剪范围
+    clip=5              # 标准化后的裁剪范围
 )
 ```
 
@@ -53,7 +49,7 @@ predictor = KronosPredictor(
 | `tokenizer` | KronosTokenizer | — | 已加载的分词器 |
 | `device` | str 或 None | None | 计算设备。`None` 时按 CUDA → MPS → CPU 自动选择 |
 | `max_context` | int | 512 | 模型处理的最大令牌序列长度。超过此长度的历史数据会被截断为最近 `max_context` 个 |
-| `clip` | float | 5 | 标准化后的值裁剪范围。`clip=5` 表示标准化后的值限制在 [-5, 5] |
+| `clip` | int | 5 | 标准化后的值裁剪范围。`clip=5` 表示标准化后的值限制在 [-5, 5] |
 
 ---
 
@@ -352,9 +348,9 @@ for i in range(pred_len):
 
 ```python
 # 步骤 1: 在 seq_len 维度前插入 sample_count 维度并复制
-x = x.unsqueeze(1).repeat(1, sample_count, 1, 1)      # (B, S, L, F) → (B, N, S, L, F)
+x = x.unsqueeze(1).repeat(1, sample_count, 1, 1)      # (B, seq_len, feat) → (B, sample_count, seq_len, feat)
 # 步骤 2: 将 batch 与 sample_count 合并为一个维度
-x = x.reshape(-1, x.size(1), x.size(2))                # → (B*N, L, F)
+x = x.reshape(-1, x.size(1), x.size(2))                # → (B*sample_count, seq_len, feat)
 # 完整变换: (B, seq_len, feat) → (B, sample_count, seq_len, feat) → (B*sample_count, seq_len, feat)
 ```
 
@@ -588,10 +584,8 @@ for sc in [1, 3, 5, 10]:
 
 ## 自测清单
 
-在继续阅读之前，确认你能回答以下问题：
-
 - [ ] `predict()` 方法内部依次执行哪些步骤？（提示：8 步流水线）
-- [ ] 如果只想要确定性最高的预测结果，应如何设置 `T` 和 `top_k`？
+- [ ] 如果只想要确定性最高的预测结果，`T` 和 `top_k` 应该怎么设置？
 - [ ] 历史数据长度超过 `max_context=512` 时会发生什么？
 - [ ] 为什么增大 `sample_count` 会同时影响结果平滑程度和资源占用？
 - [ ] `predict_batch()` 对输入数据有什么限制条件？

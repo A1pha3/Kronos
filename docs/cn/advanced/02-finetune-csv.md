@@ -5,11 +5,11 @@
 
 ### 学习目标
 
-阅读本文后，你将能够：
+以下内容讲解如何用通用 CSV 数据微调 Kronos：
 
-- [ ] 创建 YAML 配置文件并使用 `train_sequential.py` 一键完成两阶段微调
+- [ ] 能创建 YAML 配置文件并使用 `train_sequential.py` 一键完成两阶段微调
 - [ ] 理解 `CustomKlineDataset` 的数据加载逻辑及与 `SequentialTrainer` 的协作关系
-- [ ] 根据数据特征决定是否需要微调分词器，并排查训练不收敛问题
+- [ ] 能根据数据特征决定是否需要微调分词器，并排查训练不收敛问题
 
 ---
 
@@ -57,7 +57,7 @@ timestamps,open,high,low,close,volume,amount
 
 **要求**：
 
-- 第一列必须是 `timestamps`（`pd.to_datetime` 可解析的格式）
+- 必须包含 `timestamps` 列（`pd.to_datetime` 可解析的格式）
 - 必须包含 `open`、`high`、`low`、`close` 四列
 - `volume` 和 `amount` 列可选
 - 数据按时间升序排列
@@ -405,8 +405,6 @@ python finetune_csv/train_sequential.py --config config.yaml
 ---
 
 ## 自测清单
-
-完成本指南后，检查你是否掌握了以下要点：
 
 - [ ] 能创建一份有效的 `config.yaml` 并运行 `train_sequential.py`
 - [ ] 知道何时应将 `experiment.train_tokenizer` 设为 `false`

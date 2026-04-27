@@ -7,12 +7,12 @@
 
 ## 学习目标
 
-阅读本文后，你将能够：
+以下内容覆盖 Kronos 的主要扩展点和修改时的安全边界：
 
-- [ ] 在 Kronos 的架构中定位需要修改的模块并预估影响范围
-- [ ] 添加自定义的时间特征、数据集或采样策略
+- [ ] 能在 Kronos 的架构中定位需要修改的模块并预估影响范围
+- [ ] 能添加自定义的时间特征、数据集或采样策略
 - [ ] 理解模型的扩展点和设计约束
-- [ ] 运行回归测试验证修改的正确性
+- [ ] 能运行回归测试验证修改的正确性
 
 ---
 
@@ -161,14 +161,25 @@ class MyCustomDataset(Dataset):
         x = (x - x_mean) / (x_std + 1e-5)
         x = np.clip(x, -self.clip, self.clip)
 
-        return torch.from_numpy(x)
+        # 时间特征（训练管线需要同时提供数据和时间戳）
+        if 'timestamps' in self.data.columns:
+            ts = pd.to_datetime(window['timestamps'])
+            x_stamp = np.stack([
+                ts.dt.minute.values, ts.dt.hour.values,
+                ts.dt.weekday.values, ts.dt.day.values,
+                ts.dt.month.values
+            ], axis=-1).astype(np.float32)
+            return torch.from_numpy(x), torch.from_numpy(x_stamp)
+        else:
+            return torch.from_numpy(x)
 ```
 
 **关键要求**：
 
-1. `__getitem__` 返回标准化后的张量，形状 `(lookback + predict_window, 6)`
+1. `__getitem__` 应返回标准化后的数据张量和时间特征张量，形状分别为 `(lookback + predict_window, 6)` 和 `(lookback + predict_window, 5)`
 2. 数据列顺序必须与预训练一致：`open, high, low, close, volume, amount`
 3. 实例级标准化（每条样本独立）是跨市场泛化的关键
+4. 时间特征提取方式应与 `calc_time_stamps()` 一致：`minute, hour, weekday, day, month`
 
 ---
 
@@ -455,11 +466,11 @@ class AugmentedKlineDataset(Dataset):
 
 ## 自测清单
 
-- [ ] 我能在源码中定位添加新时间特征需要修改的所有文件
-- [ ] 我能实现一个自定义数据集并确保输出形状正确
-- [ ] 我知道修改 `s1_bits` / `s2_bits` 后需要重新训练模型
-- [ ] 我能运行回归测试并判断修改是否破坏了现有功能
-- [ ] 我能评估一个修改的"影响范围"（参考架构文档的影响矩阵）
+- [ ] 能在源码中定位添加新时间特征需要修改的所有文件
+- [ ] 能实现一个自定义数据集并确保输出形状正确
+- [ ] 知道修改 `s1_bits` / `s2_bits` 后需要重新训练模型
+- [ ] 能运行回归测试并判断修改是否破坏了现有功能
+- [ ] 能评估一个修改的"影响范围"（参考架构文档的影响矩阵）
 
 ---
 

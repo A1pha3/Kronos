@@ -8,26 +8,24 @@
 
 ## 学习目标
 
-完成本教程后，你将能够：
+学完这篇教程，你应能独立完成以下操作：
 
-- [ ] 使用预训练模型进行 K 线预测
+- [ ] 使用预训练模型完成 K 线预测
 - [ ] 理解预测流程的三个阶段：加载模型 → 准备数据 → 执行预测
-- [ ] 看懂预测结果的含义
-- [ ] 独立调整温度参数和采样次数来控制预测效果
+- [ ] 看懂预测结果并判断是否正常
+- [ ] 通过调整温度参数和采样次数来控制预测效果
 
 ---
 
 ## 核心概念速览
 
-在动手之前，你需要知道一件事：**Kronos 的预测过程分为三个阶段**。
+动手之前，你需要知道一件事：**Kronos 的预测过程分为三个阶段**。
 
 ```
 原始 OHLCV 数据 → KronosTokenizer（分词器）编码 → Kronos（模型）自回归推理 → 解码回 OHLCV 数据
 ```
 
-- **KronosTokenizer**：将连续的 K 线数据压缩为离散的"令牌"序列
-- **Kronos**：根据历史令牌序列，预测未来的令牌序列
-- **KronosPredictor**：将上面两步封装为一个简单的 `predict()` 方法
+`KronosTokenizer` 将连续的 K 线数据压缩为离散的"令牌"序列，`Kronos` 根据历史令牌预测未来令牌，`KronosPredictor` 将两步封装为一个 `predict()` 方法。日常使用中，你只需要跟 `KronosPredictor` 打交道。
 
 日常使用中，你只需要跟 `KronosPredictor` 打交道。
 
@@ -57,6 +55,7 @@ predictor = KronosPredictor(model, tokenizer, max_context=512)
 - `from_pretrained()` 从 HuggingFace Hub 下载并加载预训练权重，返回已初始化的模型实例
 - `KronosPredictor` 接收模型和分词器，封装了完整的预测流程。`max_context=512` 是模型支持的最大上下文窗口长度
 - 如果不指定 `device` 参数，`KronosPredictor` 会按 CUDA → MPS → CPU 的顺序自动选择
+- `KronosPredictor` 完整构造函数签名：`KronosPredictor(model, tokenizer, device=None, max_context=512, clip=5)`。其中 `clip=5` 控制标准化时的裁剪范围，`device` 可手动指定为 `"cpu"` 以在 GPU 显存不足时回退
 
 > **注意**：如果使用 Kronos-mini，需要搭配专用分词器 `Kronos-Tokenizer-2k` 并将 `max_context` 设为 2048。详见 [模型对比与选型](../advanced/07-model-comparison.md)。
 
@@ -173,7 +172,11 @@ plt.show()
 
 ## 如何解读预测结果
 
-预测完成后，`pred_df` 是一个标准的 DataFrame，包含 6 列 OHLCV 数据。以下是正确解读结果的几个关键点：
+预测完成后，`pred_df` 是一个标准的 DataFrame，包含 6 列 OHLCV 数据。核心要点：
+
+> **Kronos 输出的是概率性预测，不是精确价格。** 关注趋势方向和波动范围比追求精确数值更有意义。短期预测可信度更高，多次采样可以估计不确定性。
+
+以下是详细解读：
 
 ### 预测的是概率分布，不是精确价格
 
@@ -288,12 +291,7 @@ print(pred_df.head())
 
 ## 要点回顾
 
-到这里，你已经跑通了 Kronos 的完整预测流程。几个关键点：
-
-- Kronos 的预测经历"分词器编码 → 模型自回归生成 → 解码回原始数据"三个阶段，但 `KronosPredictor` 将其封装为一次 `predict()` 调用
-- 输入是包含 OHLCV 列的 DataFrame，输出也是同样格式的 DataFrame
-- 温度 `T` 和 `top_p` 控制预测的随机性与多样性；增大 `sample_count` 可以通过多次采样取均值来提升稳定性
-- 预测是概率性的，关注趋势方向和波动范围比追求精确数值更有意义
+到这里，你已经跑通了 Kronos 的完整预测流程。几个值得记住的关键点：预测经历"分词器编码 → 模型自回归生成 → 解码回原始数据"三个阶段，但 `KronosPredictor` 将其封装为一次 `predict()` 调用；输入输出都是包含 OHLCV 列的 DataFrame；温度 `T` 和 `top_p` 控制随机性与多样性，增大 `sample_count` 通过多次采样取均值来提升稳定性；输出是概率性的，关注趋势方向和波动范围比追求精确数值更有意义。
 
 ---
 
@@ -301,27 +299,27 @@ print(pred_df.head())
 
 ### Q: 首次运行很慢？
 
-**A**: 首次运行需要从 HuggingFace Hub 下载模型权重。`Kronos-small` 约 50 MB，`Kronos-base` 约 200 MB。下载完成后，后续运行会使用缓存。
+首次需要从 HuggingFace Hub 下载模型权重（`Kronos-small` 约 50 MB，`Kronos-base` 约 200 MB）。下载完成后后续运行会使用缓存。
 
 ### Q: 预测结果每次都不同？
 
-**A**: 这是正常现象。Kronos 使用采样策略生成预测，具有随机性。设置 `sample_count=5` 或更高可以取多次采样的平均值，使结果更稳定。如果需要完全确定的结果，可以设置 `T=0.1` 和 `top_k=1`（贪婪解码）。
+这是正常的。Kronos 使用采样策略，具有随机性。设 `sample_count=5` 或更高可以取平均值使结果更稳定；需要完全确定的结果时设 `T=0.1` 和 `top_k=1`（贪婪解码）。
 
 ### Q: 只想预测价格，没有成交量数据怎么办？
 
-**A**: 只需在 DataFrame 中提供 `open`、`high`、`low`、`close` 四列即可。KronosPredictor 会自动将 `volume` 和 `amount` 填充为 0。
+只需在 DataFrame 中提供 `open`、`high`、`low`、`close` 四列，KronosPredictor 会自动将 `volume` 和 `amount` 填充为 0。
 
 ### Q: 预测结果看起来像一条直线？
 
-**A**: 可能的原因包括：（1）`lookback` 设置过小（建议不低于 64），模型没有足够的历史信息来捕捉波动规律；（2）温度 `T` 设置过低（如 0.01），导致模型几乎退化为确定性输出。尝试将 `lookback` 提高到 200 以上，并将 `T` 设为 0.8-1.2 之间。更多诊断方法参见 [常见问题与故障排查](../references/troubleshooting.md)。
+可能原因：（1）`lookback` 设置过小（建议不低于 64），模型没有足够历史信息；（2）温度 `T` 过低（如 0.01），导致退化为确定性输出。尝试 `lookback` 提高到 200 以上，`T` 设为 0.8–1.2。更多诊断方法参见 [故障排查](../references/troubleshooting.md)。
 
-### Q: 运行时提示 OOM（内存不足）怎么办？
+### Q: 运行时 OOM（内存不足）怎么办？
 
-**A**: OOM 通常由以下原因导致：（1）`lookback` 过大——尝试降低到 200 或更小；（2）`sample_count` 过大——先从 1 开始测试；（3）`pred_len` 过长——缩短预测步数。如果使用 GPU，可以在 `KronosPredictor` 中显式指定 `device="cpu"` 来避免显存不足。
+通常是 `lookback` 过大（降到 200）、`sample_count` 过大（先从 1 开始）或 `pred_len` 过长（缩短预测步数）导致的。GPU 环境下可以在 `KronosPredictor` 中指定 `device="cpu"` 避免显存不足。
 
 ### Q: 如何卸载或清理模型缓存？
 
-**A**: Kronos 通过 HuggingFace Hub 加载模型，下载的权重文件会缓存在本地。默认缓存位置取决于操作系统：
+Kronos 通过 HuggingFace Hub 加载模型，权重文件缓存在本地。默认缓存位置：
 
 | 操作系统 | 缓存路径 |
 |----------|----------|
@@ -363,11 +361,15 @@ export HF_HUB_CACHE=/data/hf_hub_cache    # 单独设置 Hub 缓存目录
 
 ## 自测清单
 
+检查一下你掌握了多少：
+
 - [ ] 我能解释 Kronos 预测的三个阶段（分词 → 推理 → 解码）
 - [ ] 我能独立完成从加载模型到获取预测结果的完整流程
 - [ ] 我能说出温度参数 `T` 和 `top_p` 各自的作用
 - [ ] 我能解释 `sample_count` 参数如何影响预测的稳定性
 - [ ] 我能根据输出判断预测是否正常运行（检查 DataFrame 格式和数值合理性）
+
+如果都打勾了，恭喜——Kronos 的基本用法你已经掌握了。接下来可以深入了解 [数据准备](03-data-preparation.md) 或 [核心概念](../core-concepts/01-overview.md)。
 
 ---
 

@@ -5,12 +5,12 @@
 
 ## 学习目标
 
-完成本文后，你将能够：
+以下内容详解 BSQ 的数学原理：
 
-- [ ] 手动计算一个 D=4 向量的 BSQ 量化过程（从连续值到索引）
-- [ ] 解释直通估计器（STE）如何解决二值化的不可导问题
-- [ ] 说明 commit loss 与双熵正则化的各自作用和调节方向
-- [ ] 理解分组（group）机制如何平衡熵计算效率与精度
+- [ ] 能手动计算一个 D=4 向量的 BSQ 量化过程（从连续值到索引）
+- [ ] 能解释直通估计器（STE）如何解决二值化的不可导问题
+- [ ] 能说明 commit loss 与双熵正则化的各自作用和调节方向
+- [ ] 能理解分组（group）机制如何平衡熵计算效率与精度
 
 ---
 
@@ -275,7 +275,7 @@ D = 20, group_size = 4（Kronos 实际使用的值）
 → 每个子组的码本大小：2^4 = 16
 ```
 
-> **注意**：`BinarySphericalQuantizer` 的构造函数默认 `group_size=9`（见 `module.py`），但 Kronos 在所有微调管道中将其覆盖为 4（`arch.get('group_size', 4)`）。由于源码中断言 `embed_dim % group_size == 0`，group_size 必须能整除 embed_dim=20；group_size=9 是原始 BSQ 论文的推荐值，但 20 不能被 9 整除，故 Kronos 不使用该默认值，而是选择了 20 的因数 4。
+> **注意**：`BinarySphericalQuantizer` 的构造函数默认 `group_size=9`（见 `module.py`），但 Kronos 的 CSV 微调管道将其默认覆盖为 4（`train_sequential.py` 中 `arch.get('group_size', 4)`），Qlib 微调管道则从预训练模型的 `config.json` 继承该值。由于源码中断言 `embed_dim % group_size == 0`，group_size 必须能整除 embed_dim=20；group_size=9 是原始 BSQ 论文的推荐值，但 20 不能被 9 整除，故 Kronos 不使用该默认值，而是选择了 20 的因数 4。
 
 **为什么需要分组？** 当 D=20 时，完整的码本大小为 2^20 ≈ 100 万。直接在这个尺度上计算熵需要统计 100 万个条目的频率，计算量大且统计不可靠。分组后，只需要在每个 16 个条目的子码本上计算熵，然后求和近似。
 
@@ -469,7 +469,7 @@ tokenizer.eval()
 
 df = pd.read_csv("./examples/data/XSHG_5min_600977.csv")
 df['timestamps'] = pd.to_datetime(df['timestamps'])
-features = df[['open','high','low','close','volume','amount']].values.astype('float32)
+features = df[['open','high','low','close','volume','amount']].values.astype('float32')
 features = (features - features.mean(0)) / (features.std(0) + 1e-5)
 x = torch.from_numpy(features).unsqueeze(0)
 
@@ -487,11 +487,11 @@ with torch.no_grad():
 
 ## 自测清单
 
-- [ ] 我能手动完成一个简单向量的 BSQ 量化过程
-- [ ] 我能解释直通估计器（STE）为什么能在不可导操作中传递梯度
-- [ ] 我能说明 commit loss 和熵正则化各自优化的目标
-- [ ] 我能解释分组（group）机制如何降低熵计算复杂度
-- [ ] 我能说出调整 β、γ₀、γ 参数对训练效果的影响方向
+- [ ] 能手动完成一个简单向量的 BSQ 量化过程
+- [ ] 能解释直通估计器（STE）为什么能在不可导操作中传递梯度
+- [ ] 能说明 commit loss 和熵正则化各自优化的目标
+- [ ] 能解释分组（group）机制如何降低熵计算复杂度
+- [ ] 能说出调整 beta、gamma0、gamma 参数对训练效果的影响方向
 
 ---
 

@@ -5,11 +5,11 @@
 
 ### 学习目标
 
-阅读本文后，你将能够：
+以下内容走完 Qlib 微调的全流程：
 
-- [ ] 配置并运行 Qlib 数据预处理与两阶段微调流水线
+- [ ] 能配置并运行 Qlib 数据预处理与两阶段微调流水线
 - [ ] 理解分词器微调与预测模型微调的损失函数设计及关键超参数含义
-- [ ] 使用分布式训练（torchrun）完成多 GPU 微调并判断训练效果
+- [ ] 能使用分布式训练（torchrun）完成多 GPU 微调并判断训练效果
 
 ---
 
@@ -379,7 +379,7 @@ torchrun --standalone --nproc_per_node=1 finetune/train_tokenizer.py
 
 ### Q: 学习率调度器（OneCycleLR）的参数含义？
 
-**A**: 两个训练脚本均使用 `OneCycleLR` 调度器，且参数完全一致（`pct_start=0.03, div_factor=10`）。这一结论已通过源码确认：`train_tokenizer.py` 和 `train_predictor.py` 均在第 77-80 行附近使用相同配置创建调度器。
+**A**: 两个训练脚本均使用 `OneCycleLR` 调度器，且参数完全一致（`pct_start=0.03, div_factor=10`）。具体位置：`train_tokenizer.py` 约第 104-111 行，`train_predictor.py` 约第 77-81 行。
 
 - **pct_start=0.03**：前 3% 的训练步用于 warmup（从 `max_lr / 10` 线性上升到 `max_lr`），之后余弦退火到接近 0
 - **div_factor=10**：初始学习率为 `max_lr / 10`，即分词器训练从 2e-5 开始，预测模型从 4e-6 开始
@@ -436,8 +436,6 @@ torchrun --standalone --nproc_per_node=1 finetune/train_tokenizer.py
 ---
 
 ## 自测清单
-
-完成本指南后，检查你是否掌握了以下要点：
 
 - [ ] 能解释为什么分词器微调必须在预测模型微调之前完成
 - [ ] 知道如何通过 `torchrun --nproc_per_node=N` 控制使用的 GPU 数量
