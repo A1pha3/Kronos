@@ -20,7 +20,7 @@
 
 **KronosPredictor** 是 Kronos 的高层预测接口，将"数据预处理 → 分词编码 → 自回归推理 → 解码还原 → 后处理"的完整流程封装为 `predict()` 和 `predict_batch()` 两个方法。
 
-直接使用 KronosTokenizer + Kronos 进行预测需要手动处理大量细节：标准化、时间特征提取、令牌缓冲区管理、采样、反标准化等。KronosPredictor 把这些步骤封装起来，用户只需关心输入数据和预测参数。
+直接使用 KronosTokenizer + Kronos 进行预测需要手动处理大量细节：标准化、时间特征提取、令牌缓冲区管理、采样、反标准化等。KronosPredictor 把这些步骤全部封装，用户只需关心输入数据和预测参数。
 
 ---
 
@@ -195,7 +195,7 @@ model = Kronos.from_pretrained("NeoQuasar/Kronos-small")
 predictor = KronosPredictor(model, tokenizer, max_context=512)
 
 # 2. 准备数据
-df = pd.read_csv("./examples/data/XSHG_5min_600977.csv")
+df = pd.read_csv("./data/XSHG_5min_600977.csv")
 df['timestamps'] = pd.to_datetime(df['timestamps'])
 
 lookback = 400   # 历史窗口长度
@@ -227,7 +227,7 @@ mae = (pred_df[['open', 'high', 'low', 'close']] - true_df.values).abs().mean().
 print(f"OHLC 平均绝对误差: {mae:.4f}")
 ```
 
-> **运行提示**：请确保已安装 `pandas`、`torch` 等依赖，且数据文件路径正确。若在 `examples/` 目录下运行，可将路径改为 `./data/XSHG_5min_600977.csv`。
+> **运行提示**：请确保已安装 `pandas`、`torch` 等依赖，且数据文件路径正确。数据文件需自行准备，格式参考 [数据准备指南](../getting-started/03-data-preparation.md)。
 
 ---
 
@@ -554,7 +554,7 @@ tokenizer = KronosTokenizer.from_pretrained("NeoQuasar/Kronos-Tokenizer-base")
 model = Kronos.from_pretrained("NeoQuasar/Kronos-small")
 predictor = KronosPredictor(model, tokenizer, max_context=512)
 
-df = pd.read_csv("./examples/data/XSHG_5min_600977.csv")
+df = pd.read_csv("./data/XSHG_5min_600977.csv")
 df['timestamps'] = pd.to_datetime(df['timestamps'])
 
 lookback = 400

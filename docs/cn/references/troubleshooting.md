@@ -5,9 +5,23 @@
 
 ---
 
+## 目录
+
+- [快速诊断：根据错误信息定位](#快速诊断根据错误信息定位)
+- [内存类错误](#内存类错误)
+- [数据类错误](#数据类错误)
+- [张量维度错误](#张量维度错误)
+- [模型加载错误](#模型加载错误)
+- [训练类错误](#训练类错误)
+- [预测结果类问题](#预测结果类问题)
+- [MPS（Apple Silicon）相关问题](#mpsapple-silicon相关问题)
+- [高级调试技巧](#高级调试技巧)
+
+---
+
 ## 快速诊断：根据错误信息定位
 
-看到报错后，用关键词在下表中快速定位对应的排查步骤：
+看到报错后，先在下表中按关键词定位对应的排查步骤：
 
 | 错误信息关键词 | 可能原因 | 跳转 |
 |--------------|---------|------|
@@ -29,6 +43,8 @@
 ---
 
 ## 按错误类型索引
+
+如果已经知道问题类别，可通过下表直接跳转：
 
 | 错误类型 | 常见场景 | 跳转 |
 |---------|---------|------|
@@ -186,7 +202,7 @@ for col in ['open', 'high', 'low', 'close']:
 
 ### amount 列自动推算的注意事项（有 volume 但无 amount）
 
-**触发场景**：输入 DataFrame 有 `volume` 列但没有 `amount` 列时，KronosPredictor 自动推算 `amount = volume * mean(open, high, low, close)`（逐行算术均价）。如果 `volume` 与实际成交额差距大，可能影响预测质量。
+**触发场景**：输入 DataFrame 有 `volume` 列但没有 `amount` 列时，KronosPredictor 自动推算 `amount = volume * mean(open, high, low, close)`（逐行算术均价，非成交量加权均价）。如果推算值与实际成交额差距大，可能影响预测质量。
 
 **排查步骤**：
 
@@ -194,8 +210,8 @@ for col in ['open', 'high', 'low', 'close']:
 # 检查推算 amount 与真实 amount 的偏差
 if 'volume' in df.columns and 'amount' not in df.columns:
     estimated_amount = df['volume'] * df[['open', 'high', 'low', 'close']].mean(axis=1)
-    print(f"amount 已自动推算（算术均价 × volume），非真实成交额")
-    print(f"建议：如有真实 amount 数据，请手动添加到 DataFrame 中")
+    print("amount 已自动推算（算术均价 x volume），非真实成交额")
+    print("建议：如有真实 amount 数据，请手动添加到 DataFrame 中")
 ```
 
 ---
@@ -341,7 +357,7 @@ print(f"标准化后 >5 的比例: {(np.abs(x_norm) > 5).mean():.4f}")
 print(f"clip 后范围: [{x_clipped.min():.2f}, {x_clipped.max():.2f}]")
 ```
 
-> **注意**：KronosPredictor 的标准化流程是 `z-score → clip(-5, 5)`。如果你的数据 clip 后仍有大量值被裁剪（标准化后 >5 的比例 >1%），说明数据中可能存在异常值需要先处理。
+> **注意**：KronosPredictor 的标准化流程是 `z-score -> clip(-5, 5)`。如果标准化后 `|x| > 5` 的比例超过 1%，说明数据中可能存在异常值需要先处理。
 
 ### DDP / torchrun 相关错误
 
@@ -370,7 +386,7 @@ torchrun --standalone --nproc_per_node=1 finetune/train_tokenizer.py
 
 ### 预测结果为一条直线
 
-**可能原因与解决方法**：
+**可能原因与解决方法**（也可参考 [FAQ：预测结果每次不同](faq.md#q-预测结果每次都不同正常吗) 中的采样参数说明）：
 
 | 原因 | 解决方法 | 为什么有效 |
 |------|---------|-----------|
@@ -388,7 +404,7 @@ torchrun --standalone --nproc_per_node=1 finetune/train_tokenizer.py
 3. **增加历史窗口**：`lookback` 建议不低于 200
 4. **增加采样次数**：`sample_count=5` 可获得更稳定的结果
 5. **调整温度**：`T=1.0` 是推荐起点
-6. **确认模型处于 eval 模式**：如果在预测前手动调用了 `model.train()` 而非 `model.eval()`，dropout 层会处于激活状态，导致预测结果不稳定。`KronosPredictor` 内部通过 `torch.no_grad()` 禁用梯度计算，但**不会**自动调用 `model.eval()`。如果你的代码在 `predict()` 之前调用了 `model.train()`，需要手动调用 `model.eval()` 恢复
+6. **确认模型处于 eval 模式**：`KronosPredictor` 内部的 `auto_regressive_inference` 使用 `torch.no_grad()` 禁用梯度计算，但**不会**自动调用 `model.eval()`。如果你的代码在 `predict()` 之前调用了 `model.train()`（例如在微调流程中），dropout 层会处于激活状态，导致预测结果不稳定。此时需要手动调用 `model.eval()` 恢复
 
 > **注意**：金融预测本身具有高度不确定性。模型预测反映的是基于历史模式的概率分布，不是确定性预测。
 
@@ -396,7 +412,7 @@ torchrun --standalone --nproc_per_node=1 finetune/train_tokenizer.py
 
 **可能原因**：
 
-Kronos 在标准化后的空间进行预测，反标准化时可能产生负数（特别是当历史波动极大或预测步数很长时）。
+Kronos 在标准化空间进行预测，反标准化时可能产生负数（特别是历史波动极大或预测步数很长时）。
 
 **解决方法**：
 
@@ -426,7 +442,7 @@ def fix_ohlc_logic(pred_df):
 pred_df = fix_ohlc_logic(pred_df)
 ```
 
-> **为什么用向量化？** 逐行迭代（`for i in range(len(pred_df))`）在数据量较大时（如数万条预测）性能很差。pandas 的 `max(axis=1)` / `min(axis=1)` 底层使用 NumPy C 扩展，通常快一到两个数量级。如果你的环境不支持 pandas 向量化操作，可以用 `df.at[i, 'high'] = max(h, o, c)` 逐行处理作为后备方案。
+> **为什么用向量化？** pandas 的 `max(axis=1)` / `min(axis=1)` 底层使用 NumPy C 扩展，比逐行迭代（`for i in range(len(pred_df))`）通常快一到两个数量级。
 
 ---
 
@@ -434,7 +450,7 @@ pred_df = fix_ohlc_logic(pred_df)
 
 ### RuntimeError: MPS does not support ...
 
-**触发场景**：在 Apple Silicon Mac（M1/M2/M3/M4）上使用 MPS 后端时，某些 PyTorch 操作尚未被 MPS 支持。
+**触发场景**：在 Apple Silicon Mac（M1/M2/M3/M4）上使用 MPS 后端时，部分 PyTorch 操作尚未被 MPS 支持。
 
 **排查步骤**：
 
@@ -477,10 +493,9 @@ import torch
 torch.autograd.set_detect_anomaly(True)
 
 # 运行一次前向+反向传播，如果出现 NaN 会抛出 RuntimeError 并指出具体操作
-# 注意：这会显著降低训练速度，仅用于调试
 ```
 
-启用后，PyTorch 会在产生 NaN 的具体算子处抛出异常，帮助你精确定位问题源头。
+启用后，PyTorch 会在产生 NaN 的具体算子处抛出异常，帮助精确定位问题源头。定位完成后记得关闭（设为 `False`），因为异常检测会使训练速度下降 30%-50%。
 
 ### 使用 torch.profiler 分析性能瓶颈
 
@@ -556,6 +571,6 @@ if torch.isnan(decoded).any():
 - [ ] 我能说出训练不收敛的至少 3 个排查方向
 - [ ] 我知道如何用 `detect_anomaly` 定位 NaN 来源
 - [ ] 我知道分词器与模型不匹配时会出现什么错误
-- [ ] 我知道 `KronosPredictor` 不会自动调用 `model.eval()`，需要在手动调用 `model.train()` 后自行恢复
+- [ ] 我知道 `KronosPredictor` 不会自动调用 `model.eval()`，在 `model.train()` 之后需手动恢复
 
 ---

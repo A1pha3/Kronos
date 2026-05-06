@@ -5,7 +5,7 @@
 
 ## 学习目标
 
-这篇分析 Kronos Transformer 各组件的设计决策与替代方案：
+这篇文档分析 Kronos Transformer 各组件的设计决策与替代方案：
 
 - [ ] 解释 Pre-Norm + RMSNorm + RoPE + SwiGLU 的选择理由及各自替代方案
 - [ ] 说明因果掩码和填充掩码在自注意力和交叉注意力中的不同行为

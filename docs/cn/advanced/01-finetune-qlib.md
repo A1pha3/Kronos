@@ -3,9 +3,9 @@
 > **目标读者**：想使用中国 A 股数据微调 Kronos 的开发者
 > **前置要求**：理解核心概念，熟悉 PyTorch 训练流程
 
-### 学习目标
+## 学习目标
 
-走完这篇，你就能独立完成 Qlib 微调的全流程：
+完成这篇文档后，你能独立完成 Qlib 微调的全流程：
 
 - [ ] 配置并运行 Qlib 数据预处理与两阶段微调流水线
 - [ ] 理解分词器微调与预测模型微调的损失函数设计及关键超参数含义
@@ -253,10 +253,10 @@ Qlib 微调流水线使用 PyTorch DDP（DistributedDataParallel）进行多 GPU
 
 ```bash
 # 2 卡训练
-torchrun --standalone --nproc_per_node=2 train_tokenizer.py
+torchrun --standalone --nproc_per_node=2 finetune/train_tokenizer.py
 
 # 4 卡训练
-torchrun --standalone --nproc_per_node=4 train_predictor.py
+torchrun --standalone --nproc_per_node=4 finetune/train_predictor.py
 ```
 
 DDP 相关的实现细节：
@@ -343,6 +343,36 @@ python finetune/qlib_test.py
 
 ---
 
+## 常见误区
+
+在动手微调之前，澄清几个容易踩坑的认知误区。
+
+### 误区一：微调一定能提升效果
+
+**事实**：微调并非万能药，效果取决于数据质量和目标任务与预训练数据的差距。
+
+- 如果目标市场的数据特征与预训练数据相近（例如同为常规股票市场的日频数据），微调带来的增益可能非常有限，甚至因过拟合而劣于预训练模型。
+- 微调需要足够的数据支撑。当数据量不足以覆盖模型的参数空间时，模型容易记住训练集中的噪声，导致泛化能力下降。
+- **建议**：微调前先跑一遍预训练模型的基线指标。只有当基线明显低于预期、且有足够的高质量数据时，微调才有意义。
+
+### 误区二：分词器和预测模型可以同时训练
+
+**事实**：两阶段必须严格解耦，不能同时训练。
+
+- 分词器决定了令牌空间的语义结构，预测模型在这个空间中学习令牌序列的规律。如果同时更新两者，令牌空间的语义会持续漂移，预测模型永远无法收敛到一个稳定的解。
+- 这就好比一边改字典一边背单词——单词的含义不断变化，记忆自然无法建立。
+- **正确做法**：先完成分词器微调并保存，再在冻结分词器的前提下微调预测模型。在预测模型微调代码中，分词器始终处于 `eval()` 模式并被 `torch.no_grad()` 包裹。
+
+### 误区三：微调数据越多越好
+
+**事实**：数据质量远比数量重要，盲目增加数据量可能适得其反。
+
+- 低质量数据（包含大量缺失值、异常值、停牌日填充的零值）会引入噪声，让模型学到错误的规律。一千条干净数据的微调效果，往往好过一万条充满噪声的数据。
+- 数据分布也很关键：如果训练数据集中在某个特定行情阶段（如持续牛市），模型可能只学会了单边行情的规律，面对震荡市或熊市时表现反而更差。
+- **建议**：在增加数据量之前，先检查数据的覆盖性（是否包含上涨、下跌、震荡等不同行情）和干净程度（NaN 比例、零值比例）。宁可花时间清洗数据，也不要盲目堆量。
+
+---
+
 ## 常见问题
 
 ### Q: 单 GPU 可以运行吗？
@@ -376,6 +406,24 @@ torchrun --standalone --nproc_per_node=1 finetune/train_tokenizer.py
 | `KeyError: 'vol'` / `KeyError: 'amt'` | Qlib 数据版本不匹配 | 检查 Qlib 版本是否兼容，确认数据包含 `$open/$close/$volume/$turn` 等字段 |
 | pickle 文件为空或只有几百 KB | 股票池+时间范围内无有效数据 | 检查 `train_time_range` / `val_time_range` 是否与下载数据的时间范围重叠 |
 | `RuntimeError: Can't open file` | 路径权限问题 | 确保对 `dataset_path` 有写入权限 |
+
+> **空 pickle 文件的排查步骤**：这是最常见但最容易被忽略的问题。当 `qlib_data_preprocess.py` 运行完成但生成的 pickle 文件极小（几 KB 到几百 KB）时，说明没有股票通过了数据充分性过滤（`len(symbol_df) < lookback_window + predict_window + 1`）。按以下步骤排查：
+>
+> 1. **确认时间范围重叠**：打开 `config.py`，检查 `train_time_range` / `val_time_range` 的起止日期是否在你下载的 Qlib 数据覆盖范围内。Qlib 默认下载的 A 股日频数据通常覆盖 2007 年至最近更新日期。如果你的时间范围超出了数据范围，预处理脚本不会报错，但结果是空的。
+> 2. **检查股票池与数据源的匹配**：确保 `instrument` 参数（如 `csi300`）与数据源对应。如果下载的是 `cn_data`，使用 `csi300`/`csi800`/`csi1000` 都是合理的。
+> 3. **验证 Qlib 数据完整性**：在 Python 中运行以下代码，确认数据可以正常加载：
+>
+> ```python
+> import qlib
+> from qlib.data import D
+> qlib.init(provider_uri="~/.qlib/qlib_data/cn_data")
+> instruments = D.instruments("csi300")
+> print(len(list(D.list_instruments(instruments))))  # 应输出约 300
+> ```
+>
+> 如果输出为 0 或报错，说明 Qlib 数据本身有问题，需要重新下载。
+>
+> 4. **临时调大时间范围测试**：将 `train_time_range` 设为 `["2015-01-01", "2022-12-31"]` 等较宽的范围，再次运行预处理。如果此时文件变大了，说明原来的时间范围确实与数据不匹配。
 
 ### Q: 学习率调度器（OneCycleLR）的参数含义？
 

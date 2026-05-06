@@ -2,18 +2,18 @@
 
 > Kronos 是一个面向金融蜡烛图（K 线）数据的开源基础模型，被 AAAI 2026 接收。项目采用”分词器 + 自回归模型”的两阶段框架，提供多种预训练模型与微调脚本（[根目录 README](../../README.md)）。
 
-文档按 ⭐ 到 ⭐⭐⭐⭐ 四个难度递进编排。技术参数、接口签名、默认值等事实性内容以源码为准；经验性建议标注适用边界，不把推测写成事实。代码示例和行号引用均可追溯。
+文档按一到四星难度递进编排。技术参数、接口签名、默认值等事实性内容以源码为准；经验性建议标注适用边界，不做过度推断。代码示例和行号引用均可追溯。
 
-> **最小上手路径**（5 分钟）：`pip install -r requirements.txt` → 准备 OHLCV 数据 → `KronosPredictor.from_pretrained(“NeoQuasar/Kronos-small”).predict(data)` → 获得预测结果。详见 [快速开始](getting-started/02-quickstart.md)。
+> **最小上手路径**（5 分钟）：`pip install -r requirements.txt` → 准备 OHLCV 数据 → 分别加载 `KronosTokenizer` 和 `Kronos`，创建 `KronosPredictor` 并调用 `predict()` → 获得预测结果。详见 [快速开始](getting-started/02-quickstart.md)。
 
 ## 学习目标
 
-这些文档按推荐路径编排。学完后，你应该能：
+这些文档按推荐路径编排。完整学完后，你应该能做到：
 
 - 拿到任意 OHLCV 数据就能跑出 K 线预测结果
 - 根据场景在 mini / small / base / large 之间做出合理选型
 - 用自有数据（CSV 或 Qlib）微调模型，适配特定市场
-- 解释 BSQ 量化、层级令牌和自回归 Transformer 的设计动机——并用源码佐证
+- 解释 BSQ 量化、层级令牌和自回归 Transformer 的设计动机，并用源码佐证
 - 在需要时扩展数据集、时间特征或模型架构
 
 ## 前置知识
@@ -28,7 +28,7 @@
 
 ## 关键事实速查
 
-以下是 Kronos 最常被查询的技术事实，建议先浏览一遍再进入具体章节：
+以下是 Kronos 最常被查询的技术事实，建议先过一遍再进入具体章节：
 
 | 事实 | 值 |
 |------|-----|
@@ -37,7 +37,7 @@
 | 最大上下文 | small/base/large: 512, mini: 2048 |
 | 分词器搭配 | mini 使用 `Kronos-Tokenizer-2k`，其他使用 `Kronos-Tokenizer-base` |
 | 令牌维度 | s1_bits=10, s2_bits=10（已从各模型 config.json 验证确认） |
-| predict() 默认参数 | T=1.0, top_k=0, top_p=0.9, sample_count=1 |
+| predict() 默认参数 | `T=1.0, top_k=0, top_p=0.9, sample_count=1`（注：内部 `auto_regressive_inference()` 默认值为 `top_p=0.99, sample_count=5`，但 predict() 会用自己的值覆盖） |
 | 预训练市场 | 45+ 全球交易所（来源：[根目录 README](../../README.md)） |
 | 模型 Hub 路径 | `NeoQuasar/Kronos-{mini,small,base,large}` |
 | 回归测试 | `pytest tests/test_kronos_regression.py` |
@@ -140,7 +140,7 @@
 
 ## 阅读建议
 
-如果你是纯用户，按 ⭐ → ⭐⭐ → ⭐⭐⭐ 顺序走完用户路径就够了（约 2–3 小时）。想微调模型的读者，完成 ⭐⭐ 级别后可以直接跳到 [Qlib 微调](advanced/01-finetune-qlib.md) 或 [CSV 微调](advanced/02-finetune-csv.md)。想深入原理的，在 ⭐⭐ 基础上读架构分析系列（⭐⭐⭐⭐，约 3 小时）。准备贡献代码的话，先完成用户路径，再从[源码走读](architecture/04-source-code-walkthrough.md)入手。
+纯用户按 ⭐ → ⭐⭐ → ⭐⭐⭐ 顺序走完用户路径即可（约 2-3 小时）。想微调模型，完成 ⭐⭐ 级别后可以直接跳到 [Qlib 微调](advanced/01-finetune-qlib.md) 或 [CSV 微调](advanced/02-finetune-csv.md)。想深入原理，在 ⭐⭐ 基础上读架构分析系列（⭐⭐⭐⭐，约 3 小时）。准备贡献代码，先完成用户路径，再从[源码走读](architecture/04-source-code-walkthrough.md)入手。
 
 ### 如何验证学习成果
 

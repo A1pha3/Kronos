@@ -7,7 +7,7 @@
 
 ## 学习目标
 
-这篇覆盖 Web UI 的安装、启动、API 端点和常见问题：
+这篇文档覆盖 Web UI 的安装、启动、API 端点和常见问题：
 
 - [ ] 启动 Kronos Web 界面并通过浏览器进行 K 线预测
 - [ ] 理解 Web UI 的数据加载、模型选择和预测参数配置流程
@@ -197,7 +197,7 @@ POST /api/load-data
 3. `date` 列（重命名为 `timestamps`）
 4. 如果以上列均不存在，自动生成从 `2024-01-01` 起每小时一行的时间戳
 
-> **提示**：如果你的数据文件使用 `date` 或 `datetime` 作为时间列名，Web UI 会自动处理，无需手动重命名。但建议统一使用 `timestamps` 列名以避免歧义。
+> **提示**：如果你的数据文件使用 `date` 或 `datetime` 作为时间列名，Web UI 会自动处理，无需手动重命名。建议统一使用 `timestamps` 列名以减少歧义。
 
 #### 数据长度不足时的错误
 
@@ -414,6 +414,43 @@ Web UI 基于 Flask 开发服务器，按请求顺序处理——如果两个用
 
 ---
 
+## 常见误区
+
+### "Web UI 可以部署到公网"
+
+Flask 自带的开发服务器（`app.run()`）不具备生产级的安全防护能力——没有 HTTPS 加密、没有请求速率限制、没有身份认证。将 Web UI 直接暴露在公网上，等于让任何人都可以访问你的预测接口，甚至通过 debug 模式的交互式调试器执行任意代码。如果你有远程访问的需求，正确的做法是在本地运行 Web UI，然后通过 SSH 隧道或 VPN 从远程机器连接，而不是将 Flask 端口直接绑定到公网 IP。
+
+### "debug=True 对功能没有影响"
+
+`debug=True` 不仅控制日志输出的详细程度，它还会启用 Werkzeug 交互式调试器。当请求触发异常时，浏览器中会出现一个可以执行任意 Python 代码的终端。在本地单机使用时这方便排查错误，但一旦服务对局域网可见，任何能访问该端口的用户都可以通过故意触发异常来获得一个远程代码执行入口。此外，debug 模式还会启动文件监听自动重载器，增加不必要的资源开销。因此，在将服务分享给团队之前，务必将 `run.py` 和 `app.py` 中的 `debug=True` 改为 `debug=False`。
+
+### "模型切换会保留之前的状态"
+
+Web UI 使用模块级全局变量（`tokenizer`、`model`、`predictor`）存储当前模型实例。当你从 `Kronos-small` 切换到 `Kronos-base` 时，新模型的实例会直接覆盖这些全局变量，之前的模型实例会被 Python 垃圾回收。这意味着切换后，之前模型的上下文信息、设备分配等全部丢失。如果你需要在多个模型之间频繁切换，每次切换都需要重新加载模型并重新执行预测——Web UI 不支持多模型并行驻留内存。
+
+---
+
+## 性能优化
+
+如果需要在团队内部分享 Web UI（绑定 `0.0.0.0` 供局域网访问），Flask 开发服务器的单线程同步处理会成为瓶颈。可以使用生产级 WSGI 服务器来提升并发能力和稳定性：
+
+```bash
+# 安装 gunicorn
+pip install gunicorn
+
+# 以 4 个 worker 进程启动，绑定 0.0.0.0:7070
+cd /path/to/Kronos
+gunicorn -w 4 -b 0.0.0.0:7070 webui.app:app
+```
+
+使用 gunicorn 的注意事项：
+
+- 每一个 worker 进程都会独立加载模型，4 个 worker 意味着约 4 倍的内存/显存占用。建议根据可用内存调整 worker 数量（CPU 模式下每个 worker 约需 1-2 GB 内存，GPU 模式下需考虑显存容量）。
+- gunicorn 默认请求超时为 30 秒，而一次 120 步预测在 CPU 上可能需要更长时间。可通过 `--timeout 120` 参数增大超时阈值。
+- 启动前确保已关闭 `debug` 模式（在 `app.py` 中将 `debug=True` 改为 `debug=False`，或直接通过 gunicorn 启动而不再使用 `run.py`）。
+
+---
+
 ## 常见问题
 
 ### Q: 启动时提示模块缺失？
@@ -428,11 +465,11 @@ pip install -r webui/requirements.txt
 
 ### Q: 浏览器无法打开？
 
-**A**: 检查以下几点：
+**A**: 逐项排查：
 
 1. 确认 Flask 服务已启动（终端应显示 `Running on http://...`）
-2. 检查端口是否被占用（更换端口参考上面的"自定义端口"说明）
-3. 手动在浏览器中访问 `http://localhost:7070`
+2. 端口可能被占用——参考上方"自定义端口"修改端口号
+3. 手动在浏览器输入 `http://localhost:7070`
 
 ### Q: 预测时报错 "No model loaded"？
 
@@ -456,7 +493,7 @@ pip install -r webui/requirements.txt
 - 减小 `sample_count`（设为 1 最快）
 - 减小 `pred_len`（预测步数）
 
-> **注意**：模型加载时的设备选择是通过 `/api/load-model` 请求体中的 `device` 字段控制的，不是修改源码中的常量。默认值为 `"cpu"`。
+> **注意**：模型加载时的设备选择通过 `/api/load-model` 请求体中的 `device` 字段控制，不需要修改源码。默认值为 `"cpu"`。
 
 ### Q: 预测结果中出现 "Kronos model not loaded" 错误？
 
@@ -504,15 +541,16 @@ print("数据文件:", resp.json())
 
 # 执行预测（需要先加载数据和模型）
 # 步骤 1：加载数据文件
-resp = requests.post("http://localhost:7070/api/load-data", json={"data_file": "XSHG_5min_600977.csv"})
+resp = requests.post("http://localhost:7070/api/load-data", json={"file_path": "/path/to/data/XSHG_5min_600977.csv"})
 print("数据加载:", resp.json())
 
 # 步骤 2：加载模型
-resp = requests.post("http://localhost:7070/api/load-model", json={"model_name": "Kronos-small"})
+resp = requests.post("http://localhost:7070/api/load-model", json={"model_key": "kronos-small"})
 print("模型加载:", resp.json())
 
 # 步骤 3：执行预测
 resp = requests.post("http://localhost:7070/api/predict", json={
+    "file_path": "/path/to/data/XSHG_5min_600977.csv",
     "lookback": 200,
     "pred_len": 60,
     "temperature": 1.0

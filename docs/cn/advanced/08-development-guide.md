@@ -5,9 +5,25 @@
 
 ---
 
+## 目录
+
+- [学习目标](#学习目标)
+- [代码结构速览](#代码结构速览)
+- [扩展点 1：添加自定义时间特征](#扩展点-1添加自定义时间特征)
+- [扩展点 2：自定义数据集](#扩展点-2自定义数据集)
+- [扩展点 3：修改采样策略](#扩展点-3修改采样策略)
+- [扩展点 4：修改模型架构](#扩展点-4修改模型架构)
+- [常见开发错误](#常见开发错误)
+- [常见误区](#常见误区)
+- [回归测试](#回归测试)
+- [贡献代码的建议](#贡献代码的建议)
+- [动手练习](#动手练习)
+
+---
+
 ## 学习目标
 
-这篇覆盖 Kronos 的主要扩展点和修改时的安全边界：
+本文覆盖 Kronos 的主要扩展点和修改时的安全边界。完成学习后，你应能做到：
 
 - [ ] 在 Kronos 的架构中定位需要修改的模块并预估影响范围
 - [ ] 添加自定义的时间特征、数据集或采样策略
@@ -32,27 +48,27 @@ Kronos/
     └── test_kronos_regression.py  # 回归测试
 ```
 
-修改时遵循的原则：
+修改时遵循以下原则：
 
-1. **优先修改 `module.py`**：基础组件的修改集中在此文件
-2. **流水线逻辑在 `kronos.py`**：推理流程、数据处理逻辑在此文件
-3. **保持向后兼容**：修改核心 API 时确保已有代码仍可运行
-4. **运行回归测试**：每次修改后执行 `pytest tests/test_kronos_regression.py`
+1. **基础组件改 `module.py`**：TransformerBlock、BSQuantizer、Embedding 等底层组件集中在此文件
+2. **推理流程改 `kronos.py`**：预测接口、采样逻辑、自回归推理在此文件
+3. **保持向后兼容**：修改核心 API 时确保已有调用方不受影响
+4. **改完跑回归测试**：每次修改后执行 `pytest tests/test_kronos_regression.py`
 
 ### 代码修改的安全边界
 
-在修改 Kronos 代码之前，了解以下安全边界可以避免引入难以排查的问题：
+下表列出各类修改的风险等级。修改前先查表，避免引入隐蔽的回归问题：
 
-| 修改类型 | 安全 | 需要谨慎 | 需要重新训练 |
-|---------|------|---------|------------|
-| 添加新的 API 端点 | ✅ | — | — |
-| 修改采样策略（不影响模型权重） | ✅ | — | — |
-| 添加新的数据预处理步骤 | — | ⚠️ 需验证对推理的影响 | — |
-| 修改 `s1_bits` / `s2_bits` | — | — | ✅ 必须 |
-| 修改 `d_model` / `n_layers` 等结构参数 | — | — | ✅ 必须 |
-| 添加新的时间特征 | — | — | ✅ 必须（嵌入表不兼容） |
-| 替换 RMSNorm 为 LayerNorm | — | ⚠️ 需验证训练收敛 | ⚠️ 从零训练可行；加载预训练权重时高风险（权重结构不兼容） |
-| 替换 RoPE 为其他位置编码 | — | ⚠️ 需验证长序列效果 | 取决于是否加载预训练权重 |
+| 修改类型 | 风险 | 说明 |
+|---------|------|------|
+| 添加新的 API 端点 | 低 | 不影响已有调用方 |
+| 修改采样策略（不影响模型权重） | 低 | 仅改变采样行为，不涉及权重 |
+| 添加新的数据预处理步骤 | 中 | 需验证对推理结果的影响 |
+| 修改 `s1_bits` / `s2_bits` | 高 | 词汇量变化，必须重新训练分词器和预测模型 |
+| 修改 `d_model` / `n_layers` 等结构参数 | 高 | 张量形状变化，必须重新训练 |
+| 添加新的时间特征 | 高 | 嵌入表不兼容，必须重新训练 |
+| 替换 RMSNorm 为 LayerNorm | 高 | 从零训练可行；加载预训练权重时因结构不兼容（RMSNorm 仅含 `weight`，LayerNorm 含 `weight` + `bias`）会失败 |
+| 替换 RoPE 为其他位置编码 | 高 | 需重新验证长序列效果；是否需重新训练取决于是否加载预训练权重 |
 
 ---
 
@@ -60,7 +76,7 @@ Kronos/
 
 ### 当前实现
 
-`TemporalEmbedding`（定义于 `module.TemporalEmbedding`）从时间戳中提取 5 个特征：`minute`、`hour`、`weekday`、`day`、`month`。特征提取逻辑位于 `calc_time_stamps()` 函数（定义于 `kronos.calc_time_stamps`）。
+`TemporalEmbedding`（`module.py:536`）从时间戳中提取 5 个特征：`minute`、`hour`、`weekday`、`day`、`month`。特征提取逻辑位于 `calc_time_stamps()` 函数（`kronos.py:472`）。
 
 ### 扩展步骤：添加"季度"特征
 
@@ -187,7 +203,7 @@ class MyCustomDataset(Dataset):
 
 ### 当前实现
 
-`sample_from_logits()` 函数（定义于 `kronos.sample_from_logits`）支持温度采样、top-k 和 top-p 过滤。
+`sample_from_logits()` 函数（`kronos.py:373`）支持温度采样、top-k 和 top-p 过滤。
 
 ### 扩展：实现 min-p 采样（示例扩展，非现有代码）
 
@@ -222,10 +238,10 @@ def sample_from_logits(logits, temperature=1.0, top_k=None, top_p=None,
 
 | 需要同步修改 | 文件 | 说明 |
 |-------------|------|------|
-| `sample_from_logits` | `kronos.py` | 添加 `min_p` 参数和过滤逻辑 |
-| `auto_regressive_inference` | `kronos.py` | 透传 `min_p` 参数 |
-| `KronosPredictor.predict` | `kronos.py` | 暴露 `min_p` 参数给调用方 |
-| `KronosPredictor.predict_batch` | `kronos.py` | 同上 |
+| `sample_from_logits` | `kronos.py:373` | 添加 `min_p` 参数和过滤逻辑 |
+| `auto_regressive_inference` | `kronos.py:389` | 透传 `min_p` 参数 |
+| `KronosPredictor.predict` | `kronos.py:519` | 暴露 `min_p` 参数给调用方 |
+| `KronosPredictor.predict_batch` | `kronos.py:562` | 同上 |
 
 > **注意**：`KronosPredictor.predict` 和 `predict_batch` 的现有签名中都包含 `top_k` 参数（默认值为 `0`，即不过滤）。如果添加 `min_p`，建议将参数放在 `top_p` 之后，保持与现有参数风格一致。
 
@@ -253,7 +269,7 @@ model = Kronos(
 
 > **注意**：KronosTokenizer 的 encoder/decoder 层数存在"减一"行为——内部使用 `range(enc_layers - 1)` 构建 ModuleList，因此实际层数为参数值减 1。例如 `n_enc_layers=4` 只会创建 3 个 TransformerBlock。修改层数时请留意这一差异。
 
-**层数与性能的关系**：Transformer 层数决定模型能捕捉的"抽象层级"。每一层可以学习一种不同层次的模式——浅层捕捉局部波动特征（如单根 K 线的形态），深层捕捉全局趋势特征（如多根 K 线的周期性规律）。增加到 24 层意味着模型有更多层级来构建抽象表示，但也更容易过拟合（特别是在数据量有限时）。经验上，当训练数据量超过百万条 K 线时，更深层数的收益才开始明显体现。
+**层数与性能的关系**：Transformer 层数决定模型能捕捉的"抽象层级"——浅层捕捉局部波动特征（如单根 K 线形态），深层捕捉全局趋势特征（如多根 K 线的周期性规律）。增加到 24 层意味着模型有更多层级来构建抽象表示，但也更容易过拟合（尤其在数据量有限时）。经验上，训练数据量超过百万条 K 线时，更深层数的收益才开始明显体现。
 
 ```python
 # 修改 s1_bits 和 s2_bits
@@ -277,7 +293,7 @@ class TransformerBlock(nn.Module):
         self.norm2 = nn.LayerNorm(d_model)
 ```
 
-**风险等级**：从零训练时为低风险（LayerNorm 和 RMSNorm 功能等价，但需验证训练收敛性）；加载预训练权重时为**高风险**——两者的权重结构不兼容（RMSNorm 仅含 `weight`，LayerNorm 同时含 `weight` 和 `bias`），`load_state_dict()` 会因键名/形状不匹配而失败。
+**风险等级**：从零训练时为低风险（LayerNorm 和 RMSNorm 功能等价，但需验证训练收敛性）；加载预训练权重时为高风险——两者的权重结构不兼容（RMSNorm 仅含 `weight`，LayerNorm 同时含 `weight` 和 `bias`），`load_state_dict()` 会因键名/形状不匹配而失败。
 
 ---
 
@@ -287,7 +303,7 @@ class TransformerBlock(nn.Module):
 
 **症状**：`RuntimeError: Error(s) in loading state_dict for Kronos: ... size mismatch ...`
 
-**原因**：修改了 `d_model`、`n_layers`、`s1_bits` 等结构参数后，预训练权重的张量形状与新模型不匹配。
+**原因**：修改了 `d_model`、`n_layers`、`s1_bits` 等结构参数后，预训练权重的张量形状与新模型不匹配。这是 Kronos 开发中最常见的错误之一。
 
 **解决方法**：
 
@@ -307,7 +323,7 @@ model.load_state_dict(pretrained.state_dict(), strict=False)
 
 **症状**：采样结果异常——所有输出相同或完全随机。
 
-**原因**：`sample_from_logits` 中 `top_k=0` 表示**不过滤**（保留所有令牌），而 `top_p=0.9` 表示核采样。两者是独立的过滤条件，不是"top-k 等于 0 就不采样"。
+**原因**：`sample_from_logits` 中 `top_k=0` 表示不过滤（保留所有令牌），而 `top_p=0.9` 表示核采样。两者是独立的过滤条件，不是"top-k 等于 0 就不采样"。
 
 ```python
 # 正确用法
@@ -320,7 +336,27 @@ result = sample_from_logits(logits, top_k=50, top_p=1.0)   # 仅 top-k
 
 **症状**：`IndexError: index 5 is out of bounds` 或预测结果维度不匹配。
 
-**原因**：添加了新的时间特征（如"季度"），但 `KronosPredictor.time_cols` 仍为旧列表，导致 `calc_time_stamps()` 返回的列数与模型期望的不一致。需要同步更新三处：`calc_time_stamps`、`TemporalEmbedding`、`KronosPredictor.time_cols`（参见扩展点 1）。
+**原因**：添加了新的时间特征（如"季度"），但 `KronosPredictor.time_cols` 仍为旧列表，导致 `calc_time_stamps()` 返回的列数与模型期望的不一致。需要同步更新三处：`calc_time_stamps`、`TemporalEmbedding.__init__` + `forward`、`KronosPredictor.time_cols`（参见扩展点 1）。
+
+---
+
+## 常见误区
+
+以下是开发者在二次开发 Kronos 时容易产生的误解：
+
+### 误区 1：修改模型结构后还能加载预训练权重
+
+很多开发者认为只要保持类名和 `from_pretrained()` 调用不变，修改内部结构后仍可正常加载预训练权重。实际上，预训练权重按参数名和形状一一对应存储——任何结构参数的变化都会导致张量形状不匹配，`load_state_dict()` 默认（`strict=True`）会直接报错。
+
+使用 `strict=False` 可以跳过不兼容的层，但被跳过的层将以随机初始化状态参与推理，输出质量会大幅下降。结构修改通常意味着必须重新训练。
+
+### 误区 2：自定义数据集不需要实例级标准化
+
+Kronos 的设计目标是跨市场、跨品种泛化。不同标的的价格量级差异巨大（A 股可能在 1-100 元，加密货币可能在数千至数万美元），如果使用全局标准化，模型将难以适应分布差异大的新数据。实例级标准化（对每条样本独立计算均值和标准差）是保证跨市场泛化的关键设计决策。自定义数据集时，务必在 `__getitem__` 中对每条样本单独执行标准化。
+
+### 误区 3：回归测试覆盖了所有场景
+
+现有的回归测试（`test_kronos_regression.py`）仅验证模型在固定输入下的输出一致性——确认预训练模型在特定版本下产生与预期相同的数值结果。它不验证新架构、新数据或新任务的正确性。如果你修改了模型结构或引入了新的训练流水线，回归测试通过只说明未破坏原有推理路径，但无法保证新功能的正确性。新架构或新功能需要编写专门的测试。
 
 ---
 
@@ -341,6 +377,25 @@ pytest tests/test_kronos_regression.py -v
 
 - 使用固定的模型版本（`MODEL_REVISION`、`TOKENIZER_REVISION`）确保可复现
 - 在 CPU 上运行，避免 GPU 随机性
+
+### 测试策略
+
+在决定如何测试时，区分以下两种情况：
+
+**何时添加新测试**：
+
+- 新增了公共 API 方法或新的扩展点（如自定义采样策略、新的数据集类）
+- 修改了影响推理结果的关键路径（如 `sample_from_logits` 的过滤逻辑、`BSQuantizer` 的量化逻辑）
+- 引入了新的模型结构变体（需要验证新结构的前向传播不报错、输出形状正确）
+- 添加了新的数据预处理或后处理步骤
+
+**何时修改现有测试即可**：
+
+- 仅修复了 bug 且修复后的预期输出发生变化（更新断言中的预期值）
+- 调整了测试参数化（如增加新的 context length 组合）
+- 重构了内部实现但外部行为不变（现有测试应仍然通过，无需额外测试）
+
+**原则**：回归测试保证"改了不该改的东西会被发现"，新测试保证"新加的东西按预期工作"，两者互补。
 
 ### 编写新测试
 
@@ -381,9 +436,9 @@ def test_custom_dataset():
 
 ### 代码风格
 
-- 遵循项目现有的命名规范（snake_case 函数/变量，PascalCase 类）
-- 保持与现有代码一致的缩进和格式
+- snake_case 函数/变量，PascalCase 类（与项目现有风格一致）
 - 新增公共方法需要添加 docstring
+- 缩进和格式与现有代码保持一致
 
 ### 提交前检查清单
 
@@ -394,7 +449,7 @@ def test_custom_dataset():
 - [ ] 未引入新的硬编码依赖
 - [ ] 如果修改了模型结构参数，确认不会影响预训练权重加载（或已使用 `strict=False`）
 
-> **深入理解**：修改的安全性评估可参考 [系统架构分析](../architecture/01-system-architecture.md) 中的"组件替换风险评估表"，该表列出了各类修改的潜在影响和回滚策略。
+> 修改的安全性评估可参考 [系统架构分析](../architecture/01-system-architecture.md) 中的"组件替换风险评估表"。
 
 ---
 
@@ -402,7 +457,7 @@ def test_custom_dataset():
 
 ### 练习 1：添加"季度"时间特征
 
-在 `model/module.py` 中找到 `TemporalEmbedding`，按照本文"扩展点 1：添加自定义时间特征"的步骤，增加一个 `quarter_embed`（季度，取值 1-4）。修改后用以下代码验证：
+在 `model/module.py` 中找到 `TemporalEmbedding`，按照"扩展点 1"的步骤，增加一个 `quarter_embed`（季度，取值 1-4）。修改后用以下代码验证：
 
 ```python
 import torch
@@ -416,20 +471,21 @@ te.eval()
 stamp = torch.tensor([[[30, 14, 1, 15, 6, 2]]])  # minute=30, hour=14, weekday=1, day=15, month=6, quarter=2
 with torch.no_grad():
     emb = te(stamp)
-print(f"嵌入形状: {emb.shape}")  # 应为 (1, 1, 256)
+print(f"嵌入形状: {emb.shape}")  # 期望输出: (1, 1, 256)
 ```
 
-**验证方法**：
-1. 确认 `calc_time_stamps()` 输出从 5 列变为 6 列
-2. 确认 `TemporalEmbedding` 中新增了 `quarter_embed` 属性
-3. 确认 `predict()` 能正常调用且不报错
-4. 运行回归测试 `pytest tests/test_kronos_regression.py` 确认无破坏
+验证清单（逐步确认）：
 
-**注意**：此修改需要同步更新 `model/kronos.py` 中 `calc_time_stamps()` 函数和所有数据集类的时间特征列数。
+1. `calc_time_stamps()` 返回的 DataFrame 从 5 列变为 6 列，新增列名为 `quarter`
+2. `TemporalEmbedding` 实例具有 `quarter_embed` 属性（可用 `hasattr(te, 'quarter_embed')` 检查）
+3. 嵌入输出形状为 `(batch, seq_len, d_model)`，不含 NaN 或 Inf
+4. 回归测试 `pytest tests/test_kronos_regression.py` 会失败（因为预训练权重不兼容），这是预期行为
 
-### 练习 2：实现一个带数据增强的自定义数据集
+**提示**：此修改需要同步更新三个位置 -- `model/kronos.py` 中的 `calc_time_stamps()` 函数、`model/module.py` 中的 `TemporalEmbedding`，以及 `model/kronos.py` 中 `KronosPredictor.time_cols` 列表。参考"扩展点 1"的影响范围表逐一修改。
 
-基于本文"扩展点 2"的模板，创建一个在 `__getitem__` 中对输入数据添加微小高斯噪声的数据增强 Dataset：
+### 练习 2：实现带数据增强的自定义数据集
+
+基于"扩展点 2"的模板，创建一个在 `__getitem__` 中添加高斯噪声的数据增强 Dataset：
 
 ```python
 import torch
@@ -451,16 +507,33 @@ class AugmentedKlineDataset(Dataset):
     def __getitem__(self, idx):
         start = self.valid_starts[idx]
         x = self.data[start:start + self.seq_len].copy()
-        # 数据增强：添加高斯噪声（仅在训练时）
+        # 数据增强：添加高斯噪声
         if self.noise_std > 0:
             x += np.random.normal(0, self.noise_std * x.std(axis=0), size=x.shape).astype('float32')
         return torch.from_numpy(x)
 ```
 
-**验证方法**：
-1. 用项目的示例数据创建 Dataset，检查 `__getitem__` 返回张量的形状是否为 `(seq_len, 6)`
-2. 对比原始数据和增强数据的标准差——增强后的标准差应略大于原始数据（约增大 `noise_std` 倍）
-3. 多次调用 `__getitem__(0)` 应返回不同的增强结果（随机性）
+用以下代码验证：
+
+```python
+# 使用项目自带的示例数据
+ds = AugmentedKlineDataset("examples/data/XSHG_5min_600977.csv", seq_len=128)
+
+# 验证 1：输出形状
+sample = ds[0]
+assert sample.shape == (128, 6), f"形状错误: {sample.shape}"
+print(f"输出形状: {sample.shape}")  # 期望: (128, 6)
+
+# 验证 2：噪声效果（增强后标准差应略大于原始数据）
+raw = ds.data[0:128]
+print(f"原始 std: {raw.std():.4f}")
+print(f"增强 std: {sample.std():.4f}")  # 期望略大于原始值
+
+# 验证 3：多次调用结果不同（随机性）
+assert not torch.equal(ds[0], ds[0]), "两次调用应产生不同结果"
+```
+
+**思考题**：为什么这个 Dataset 没有包含标准化步骤？如果在 `__getitem__` 中同时做标准化和加噪，应该先做哪个？
 
 ---
 

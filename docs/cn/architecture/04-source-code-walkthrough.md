@@ -6,7 +6,7 @@
 
 ## 学习目标
 
-这篇逐模块解读 Kronos 核心源码的设计意图。读完后你应该能：
+这篇文档逐模块解读 Kronos 核心源码的设计意图。读完后你应该能：
 
 - [ ] 在源码中定位任意模块的实现并解释其设计意图
 - [ ] 追踪 `auto_regressive_inference()` 中的滑动窗口缓冲区管理逻辑
@@ -658,11 +658,11 @@ return self.norm(sibling_embed + attn_out)
 
 ### 陷阱 7：predict() 的 NaN 检查是严格的
 
-`predict()` 和 `predict_batch()` 中的 NaN 检查会直接抛出 `ValueError`（`kronos.py` 第 534 行），不会尝试静默填充。这与 CSV 微调流水线的 `CustomKlineDataset`（使用前向填充）行为不同。如果你从 CSV 微调流水线切换到直接调用 `predict()`，需要确保输入数据中没有 NaN——否则需要在外部预处理阶段完成填充。
+`predict()` 和 `predict_batch()` 中的 NaN 检查会直接抛出 `ValueError`（`kronos.py` 第 535 行），不会尝试静默填充。这与 CSV 微调流水线的 `CustomKlineDataset`（使用前向填充）行为不同。如果你从 CSV 微调流水线切换到直接调用 `predict()`，需要确保输入数据中没有 NaN——否则需要在外部预处理阶段完成填充。
 
 ```python
 # 如果数据可能包含 NaN，在调用 predict() 前预处理：
-df = df.fillna(method='ffill').fillna(0)
+df = df.ffill().fillna(0)
 ```
 
 ---

@@ -8,10 +8,10 @@
 
 ## 学习目标
 
-学完这篇教程，你应能独立完成以下操作：
+完成本章后，你需要做到：
 
-- [ ] 使用预训练模型完成 K 线预测
-- [ ] 理解预测流程的三个阶段：加载模型 → 准备数据 → 执行预测
+- [ ] 使用预训练模型完成一次 K 线预测
+- [ ] 理解预测流程的三个阶段：加载模型、准备数据、执行预测
 - [ ] 看懂预测结果并判断是否正常
 - [ ] 通过调整温度参数和采样次数来控制预测效果
 
@@ -19,15 +19,13 @@
 
 ## 核心概念速览
 
-动手之前，你需要知道一件事：**Kronos 的预测过程分为三个阶段**。
+Kronos 的预测管线分为三个阶段：
 
 ```
 原始 OHLCV 数据 → KronosTokenizer（分词器）编码 → Kronos（模型）自回归推理 → 解码回 OHLCV 数据
 ```
 
-`KronosTokenizer` 将连续的 K 线数据压缩为离散的"令牌"序列，`Kronos` 根据历史令牌预测未来令牌，`KronosPredictor` 将两步封装为一个 `predict()` 方法。日常使用中，你只需要跟 `KronosPredictor` 打交道。
-
-日常使用中，你只需要跟 `KronosPredictor` 打交道。
+`KronosTokenizer` 将连续的 K 线数据压缩为离散的令牌序列，`Kronos` 根据历史令牌自回归地预测未来令牌，`KronosPredictor` 把分词器加载、模型加载和推理编排封装为一个 `predict()` 方法。日常使用只需要和 `KronosPredictor` 打交道。
 
 ---
 
@@ -35,7 +33,7 @@
 
 ### 步骤 1：加载模型和分词器（预计 2 分钟）
 
-Kronos 的预训练模型托管在 HuggingFace Hub 上，首次运行会自动下载：
+预训练模型托管在 HuggingFace Hub 上，首次运行时自动下载：
 
 ```python
 from model import Kronos, KronosTokenizer, KronosPredictor
@@ -43,19 +41,19 @@ from model import Kronos, KronosTokenizer, KronosPredictor
 # 加载分词器
 tokenizer = KronosTokenizer.from_pretrained("NeoQuasar/Kronos-Tokenizer-base")
 
-# 加载预测模型（这里使用 small 版本，速度与效果的平衡点）
+# 加载预测模型（small 版本，速度与效果的平衡点）
 model = Kronos.from_pretrained("NeoQuasar/Kronos-small")
 
 # 创建预测器（自动检测并使用最佳设备）
 predictor = KronosPredictor(model, tokenizer, max_context=512)
 ```
 
-**代码解释**：
+**要点**：
 
 - `from_pretrained()` 从 HuggingFace Hub 下载并加载预训练权重，返回已初始化的模型实例
 - `KronosPredictor` 接收模型和分词器，封装了完整的预测流程。`max_context=512` 是模型支持的最大上下文窗口长度
-- 如果不指定 `device` 参数，`KronosPredictor` 会按 CUDA → MPS → CPU 的顺序自动选择
-- `KronosPredictor` 完整构造函数签名：`KronosPredictor(model, tokenizer, device=None, max_context=512, clip=5)`。其中 `clip=5` 控制标准化时的裁剪范围，`device` 可手动指定为 `"cpu"` 以在 GPU 显存不足时回退
+- 不指定 `device` 时，`KronosPredictor` 按 CUDA → MPS → CPU 的顺序自动选择
+- 完整构造函数签名：`KronosPredictor(model, tokenizer, device=None, max_context=512, clip=5)`。其中 `clip=5` 控制 z-score 标准化时裁剪的倍数范围，`device` 可手动指定为 `"cpu"` 以在 GPU 显存不足时回退
 
 > **注意**：如果使用 Kronos-mini，需要搭配专用分词器 `Kronos-Tokenizer-2k` 并将 `max_context` 设为 2048。详见 [模型对比与选型](../advanced/07-model-comparison.md)。
 
@@ -69,16 +67,17 @@ Downloading: 100%|██████████| xxx/xxx [00:xx<00:00, xx kB/s]
 
 ### 步骤 2：准备数据（预计 5 分钟）
 
-Kronos 接受包含 OHLCV 数据的 pandas DataFrame。你需要准备两份数据：
+Kronos 接受包含 OHLCV 数据的 pandas DataFrame。需要准备两份数据：
 
 - **历史数据**（`x_df`）：模型基于这段历史进行预测
-- **未来时间戳**（`y_timestamp`）：告诉模型要预测哪些时间点
+- **未来时间戳**（`y_timestamp`）：指定要预测哪些时间点
 
 ```python
 import pandas as pd
 
-# 读取数据文件
-df = pd.read_csv("./examples/data/XSHG_5min_600977.csv")
+# 读取数据文件（示例路径，替换为你自己的 OHLCV 数据文件路径）
+# 数据格式要求：包含 timestamps, open, high, low, close 列（volume 和 amount 可选）
+df = pd.read_csv("./data/XSHG_5min_600977.csv")
 df['timestamps'] = pd.to_datetime(df['timestamps'])
 
 # 设置参数
@@ -101,10 +100,10 @@ y_timestamp = df.loc[lookback:lookback+pred_len-1, 'timestamps']
 | `high` | float | 最高价 | 必填 |
 | `low` | float | 最低价 | 必填 |
 | `close` | float | 收盘价 | 必填 |
-| `volume` | float | 成交量 | 可选（缺失时自动填充 0） |
-| `amount` | float | 成交额 | 可选（缺失时若 `volume` 存在则自动推算为 `volume × 均价`，否则填充为 0） |
+| `volume` | float | 成交量 | 可选（缺失时填充 0） |
+| `amount` | float | 成交额 | 可选（缺失且 `volume` 存在时推算为 `volume * 均价`，否则填充 0） |
 
-> 如果你的数据只有 OHLC 四列，没有 `volume` 和 `amount`，KronosPredictor 会自动将两者填充为 0，不影响价格预测。如果只有 `volume` 但缺少 `amount`，则会自动推算为 `volume × 均价`。模型在预训练阶段已经学习了处理缺失成交量数据的模式——标准化后的零值不会主导价格特征的建模。
+> 只有 OHLC 四列也没问题——`KronosPredictor` 会自动将 `volume` 和 `amount` 填充为 0，不影响价格预测。模型在预训练阶段已经学习了处理缺失成交量数据的模式，标准化后的零值不会主导价格特征的建模。
 
 ### 步骤 3：执行预测（预计 5 分钟）
 
@@ -123,9 +122,9 @@ pred_df = predictor.predict(
 
 **参数说明**：
 
-- **`T`（温度）**：控制预测的随机性。`T=1.0` 是标准采样；降低温度（如 `0.5`）使预测更保守、更确定；升高温度使预测更多样化
+- **`T`（温度）**：控制采样随机性。`T=1.0` 为标准采样；降低（如 `0.5`）使预测更保守、更确定；升高则增加多样性
 - **`top_p`（核采样）**：保留累计概率达到 `top_p` 的候选令牌。`0.9` 表示从概率前 90% 的令牌中采样
-- **`sample_count`**：多次采样后取平均值可以减少随机性。`sample_count=5` 表示生成 5 个预测并取均值
+- **`sample_count`**：多次采样后取均值以减少随机性。`sample_count=5` 表示生成 5 个预测并取均值
 
 ### 验证点 2
 
@@ -134,8 +133,6 @@ pred_df = predictor.predict(
 ```python
 print(pred_df.head())
 ```
-
-> **注意**：以下输出中的时间戳、价格数值和成交量均为示例，实际结果取决于你使用的数据文件和 `y_timestamp` 输入。无需与示例完全一致，只要 DataFrame 结构正确、数值在合理范围内即可。
 
 预期输出（具体数值取决于数据）：
 
@@ -146,6 +143,8 @@ timestamps
 2024-01-15 10:05:00  12.42  12.55  12.38  12.50   987654  12123456
 ...
 ```
+
+输出的时间戳、价格和成交量均为实际预测值，无需与示例完全一致，只要 DataFrame 结构正确、数值在合理范围内即可。
 
 ### 步骤 4：可视化结果（预计 2 分钟）
 
@@ -172,15 +171,9 @@ plt.show()
 
 ## 如何解读预测结果
 
-预测完成后，`pred_df` 是一个标准的 DataFrame，包含 6 列 OHLCV 数据。核心要点：
+`pred_df` 是一个标准的 DataFrame，包含 6 列 OHLCV 数据。
 
-> **Kronos 输出的是概率性预测，不是精确价格。** 关注趋势方向和波动范围比追求精确数值更有意义。短期预测可信度更高，多次采样可以估计不确定性。
-
-以下是详细解读：
-
-### 预测的是概率分布，不是精确价格
-
-Kronos 的输出是**基于历史模式的概率性预测**。每次运行可能产生不同的结果（除非使用贪婪解码 `top_k=1`）。这不是缺陷——它反映了金融市场的不确定性本质。你应该关注**趋势方向和波动范围**，而非追求精确数值。
+**Kronos 输出的是概率性预测，不是精确价格。** 每次运行可能产生不同结果（除非使用贪婪解码 `top_k=1`），这反映了金融市场的不确定性本质。关注趋势方向和波动范围比追求精确数值更有意义。
 
 ### 预测不确定性随步数递增
 
@@ -190,19 +183,17 @@ Kronos 的输出是**基于历史模式的概率性预测**。每次运行可能
 | 20-60 步 | 中等 | 趋势方向有参考价值，具体数值偏差增大，建议结合多次采样结果判断 |
 | 60 步以上 | 较低 | 仅供参考，不确定性显著增大，适合用于极端场景分析而非具体决策 |
 
-**为什么不确定性会随步数递增？** 这是因为自回归模型每一步的预测结果都成为下一步的输入，微小的偏差会逐步传播和放大。在离散令牌空间中，每一步的错误不会像连续值那样在数值上叠加，但预测路径仍会逐步偏离真实轨迹。
-
-建议将 `pred_len` 设置在你真正需要的范围内，不要盲目追求长步数预测。
+**为什么不确定性会递增？** 自回归模型每一步的预测结果都成为下一步的输入，微小的偏差会逐步传播和放大。在离散令牌空间中，每一步的错误不会像连续值那样在数值上叠加，但预测路径仍会逐步偏离真实轨迹。建议将 `pred_len` 设置在真正需要的范围内。
 
 ### 多次采样可以估计不确定性
 
-将 `sample_count` 设为 10 并分别观察每条预测路径的分布，可以得到预测的"置信区间"——路径越分散，说明模型越不确定。实现方式是循环调用 `predict(sample_count=1)` 收集多条独立路径，再用 `np.percentile(paths, 5, axis=0)` 和 `np.percentile(paths, 95, axis=0)` 计算 90% 置信区间的上下界。如果区间很窄，说明模型对走势比较有信心；如果很宽，说明市场处于高不确定状态。完整代码示例参见 [使用场景与实战案例](../advanced/06-use-cases.md)。
+将 `sample_count` 设为 10 并分别观察每条预测路径的分布，可以得到预测的"置信区间"。路径越分散，说明模型越不确定。实现方式是循环调用 `predict(sample_count=1)` 收集多条独立路径，再用 `np.percentile(paths, 5, axis=0)` 和 `np.percentile(paths, 95, axis=0)` 计算 90% 置信区间的上下界。区间窄说明模型对走势比较有信心，区间宽则意味着市场处于高不确定状态。完整代码示例参见 [使用场景与实战案例](../advanced/06-use-cases.md)。
 
 ### 预测结果的边界条件
 
-> **注意**：当 `lookback` 超过模型的 `max_context`（默认 512）时，最早的历史数据会被静默截断。确保 `lookback <= max_context` 以充分利用所有历史数据。
+> 当 `lookback` 超过模型的 `max_context`（默认 512）时，最早的历史数据会被静默截断。确保 `lookback <= max_context` 以充分利用所有历史数据。
 
-以下情况可能导致预测结果异常，需要特别注意：
+以下情况可能导致异常结果：
 
 | 情况 | 表现 | 原因 | 处理方法 |
 |------|------|------|---------|
@@ -214,18 +205,15 @@ Kronos 的输出是**基于历史模式的概率性预测**。每次运行可能
 ### 判断预测是否正常的快速检查
 
 ```python
-# 检查预测结果是否在合理范围内
 last_close = x_df['close'].iloc[-1]
 pred_close = pred_df['close']
 
 print(f"最后一根历史收盘价: {last_close:.2f}")
 print(f"预测收盘价范围: [{pred_close.min():.2f}, {pred_close.max():.2f}]")
 print(f"预测波动幅度: {(pred_close.max() - pred_close.min()) / last_close * 100:.1f}%")
-
-# 如果预测波动幅度异常大（如超过 ±50%），可能需要调整参数
 ```
 
-**正常输出特征**：预测曲线的波动幅度与历史数据相当，趋势方向与历史走势有逻辑关联，数值不会出现极端跳变。
+正常的预测结果波动幅度应与历史数据相当，趋势方向与历史走势有逻辑关联，不出现极端跳变。波动幅度超过 ±50% 时，可能需要检查数据或参数。
 
 ---
 
@@ -244,7 +232,7 @@ model = Kronos.from_pretrained("NeoQuasar/Kronos-small")
 predictor = KronosPredictor(model, tokenizer, max_context=512)
 
 # === 2. 准备数据 ===
-df = pd.read_csv("./examples/data/XSHG_5min_600977.csv")
+df = pd.read_csv("./data/XSHG_5min_600977.csv")
 df['timestamps'] = pd.to_datetime(df['timestamps'])
 
 lookback = 400
@@ -369,7 +357,7 @@ export HF_HUB_CACHE=/data/hf_hub_cache    # 单独设置 Hub 缓存目录
 - [ ] 我能解释 `sample_count` 参数如何影响预测的稳定性
 - [ ] 我能根据输出判断预测是否正常运行（检查 DataFrame 格式和数值合理性）
 
-如果都打勾了，恭喜——Kronos 的基本用法你已经掌握了。接下来可以深入了解 [数据准备](03-data-preparation.md) 或 [核心概念](../core-concepts/01-overview.md)。
+如果都打勾了，Kronos 的基本用法你已经掌握。接下来可以深入了解 [数据准备](03-data-preparation.md) 或 [核心概念](../core-concepts/01-overview.md)。
 
 ---
 

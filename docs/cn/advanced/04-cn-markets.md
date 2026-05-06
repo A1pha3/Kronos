@@ -3,9 +3,9 @@
 > **目标读者**：想对 A 股个股进行 K 线预测的用户
 > **前置要求**：[快速开始](../getting-started/02-quickstart.md) 已完成
 
-### 学习目标
+## 学习目标
 
-这篇展示 A 股日 K 线预测的完整流程：
+这篇文档展示 A 股日 K 线预测的完整流程：
 
 - [ ] 使用 `prediction_cn_markets_day.py` 脚本对 A 股个股进行日 K 线预测
 - [ ] 理解涨跌停限制的实现逻辑，并能针对不同板块调整 `limit_rate` 参数
@@ -121,7 +121,7 @@ for col in numeric_cols:
 # 修复异常开盘价（停牌日记录为 0 或 NaN）
 bad_open = (df["open"] == 0) | (df["open"].isna())
 df.loc[bad_open, "open"] = df["close"].shift(1)
-df["open"].fillna(df["close"], inplace=True)  # 处理首行 shift 产生的 NaN
+df["open"] = df["open"].fillna(df["close"])  # 处理首行 shift 产生的 NaN
 
 # 修复缺失成交额
 if df["amount"].isna().all() or (df["amount"] == 0).all():
@@ -167,7 +167,7 @@ def clean_a_share_data(df):
     # 3. 修复开盘价异常（open=0 或 NaN → 用前一日收盘价填充）
     bad_open = (df["open"] == 0) | (df["open"].isna())
     df.loc[bad_open, "open"] = df["close"].shift(1)
-    df["open"].fillna(df["close"], inplace=True)
+    df["open"] = df["open"].fillna(df["close"])
 
     # 4. 处理剩余 NaN（前向填充 + 回填）
     df[numeric_cols] = df[numeric_cols].ffill().bfill()
@@ -193,7 +193,7 @@ y_timestamp = pd.bdate_range(
 
 > **注意**：`pd.bdate_range` 仅跳过周末，**不跳过中国法定节假日**。这意味着预测时间戳中可能包含春节、国庆等假期的日期。对于日线级别的长期预测，这种偏差通常可以接受；如需精确跳过节假日，可以使用中国交易日历库（如 `chinese_calendar`）进行过滤。
 
-如需跳过中国法定节假日，可使用 `chinese_calendar` 库：
+如需跳过中国法定节假日，推荐使用 [`chinese_calendar`](https://github.com/LKI/chinese_calendar) 库。它内置了国务院每年发布的放假安排，支持判断某日是否为工作日（已排除周末和法定节假日）：
 
 ```bash
 pip install chinese_calendar
@@ -201,10 +201,16 @@ pip install chinese_calendar
 
 ```python
 import chinese_calendar
+
+# 生成候选日期（多生成一些再过滤）
+future_dates = pd.bdate_range(start=..., periods=pred_len * 2)
 # 过滤掉节假日和周末
-future_dates = pd.bdate_range(start=..., periods=pred_len*2)  # 多生成一些再过滤
-future_dates = future_dates[~future_dates.map(lambda d: chinese_calendar.is_holiday(d.date()))][:pred_len]
+future_dates = future_dates[
+    ~future_dates.map(lambda d: chinese_calendar.is_holiday(d.date()))
+][:pred_len]
 ```
+
+> **提示**：`chinese_calendar` 每年更新以匹配最新的放假安排。如果预测的时间跨度覆盖了尚未发布放假安排的年份，建议在生成时间戳后额外检查是否有遗漏的非交易日。
 
 ### 4. 执行预测
 
@@ -342,6 +348,41 @@ pred_df = apply_price_limits(pred_df, last_close, limit_rate=0.20)  # 创业板
 
 ---
 
+## 常见误区
+
+### 误区一："Kronos 能预测涨停板"
+
+Kronos 模型对 A 股的涨跌停机制没有任何内在认知。模型学习的是 OHLCV 序列中的统计模式，并不理解"涨停封板""跌停无法卖出"等市场规则。因此：
+
+- 模型可能预测出单日涨幅超过 10%（主板）或 20%（创业板/科创板）的结果，这并不代表模型"看涨"或认为股价会封板——只是说明预测值未被约束。
+- `apply_price_limits` 是纯后处理步骤，只是机械地将价格裁剪到涨跌停区间内，并非模型自身判断。
+
+**正确理解**：应将 Kronos 的预测视为"不受市场规则约束的价格走势可能性"，再通过后处理使其符合实际交易规则。涨停板涉及资金博弈、市场情绪等复杂因素，远超模型能力范围。
+
+### 误区二："日线预测步数越多越有用"
+
+脚本默认预测 120 个交易日（约半年），但并不意味着 120 步预测具有与 20 步预测同等的可靠性。自回归模型的预测误差会逐步累积：
+
+| 预测步数 | 大致时间跨度 | 可信度 | 建议用法 |
+|---------|-------------|--------|---------|
+| 1-20 步 | 约 1 个月 | 较高 | 短期趋势判断 |
+| 20-60 步 | 1-3 个月 | 中等 | 中期方向参考 |
+| 60 步以上 | 3 个月以上 | 较低 | 仅作大方向参考，勿用于具体决策 |
+
+**正确理解**：超过 60 步的预测不确定性快速增长，应将其视为"如果当前趋势延续，价格大致可能走向何方"的趋势性参考，而非精确路径预测。
+
+### 误区三："不复权数据一定不如复权数据"
+
+很多用户认为复权数据更"干净"，因此更适合用于预测。但对于 Kronos，推荐使用不复权数据（`adjust=""`），原因如下：
+
+1. **与预训练数据一致**：Kronos 在预训练阶段使用的是不复权的原始价格数据。使用不复权数据意味着输入分布与模型训练分布最为匹配。
+2. **除权跳跃是真实信息**：除权除息导致的价格跳跃反映了公司行为（分红、送股等），模型可能已从训练数据中学到了这类模式。
+3. **复权数据引入人为修改**：前复权会将除权日之前的所有价格回溯调整，后复权会使价格数值偏离实际交易价。这些人为修改可能引入与模型训练分布不一致的模式。
+
+**例外情况**：对于分红极为频繁的个股（如银行股）进行超长期预测（5 年以上日线），不复权数据中密集的除权跳跃可能超出模型处理能力。此时可以尝试前复权数据，但需意识到这改变了输入分布，效果未必更好。
+
+---
+
 ## 动手练习
 
 ### 练习 1：预测一只 ST 股票并调整涨跌停参数
@@ -398,6 +439,8 @@ pred_df = apply_price_limits(pred_df, last_close, limit_rate=0.2)
 - [ ] 能针对 ST 股票和创业板分别设置正确的 `limit_rate` 值
 - [ ] 知道如何通过 `SAMPLE_COUNT` 和 `PRED_LEN` 平衡预测的稳定性和实用性
 - [ ] 理解为什么脚本使用不复权数据（`adjust=""`），以及何时可能需要使用复权数据
+- [ ] 能解释为什么 Kronos 无法"预测涨停板"（模型没有涨跌停概念）
+- [ ] 知道日线预测中超过 60 步的结果应如何正确解读
 
 ---
 
